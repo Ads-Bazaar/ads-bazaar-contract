@@ -1,0 +1,9 @@
+/target
+**/target
+test_snapshots/
+*.wasm
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.log

@@ -1,0 +1,21 @@
+[package]
+name = "ads-bazaar-campaign-escrow"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Escrow contract for funding, tracking and releasing multi-currency creator campaign payouts"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+doctest = false
+
+[features]
+testutils = ["soroban-sdk/testutils"]
+
+[dependencies]
+soroban-sdk = { workspace = true }
+ads-bazaar-shared = { workspace = true }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }

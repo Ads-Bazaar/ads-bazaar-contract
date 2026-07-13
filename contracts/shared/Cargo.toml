@@ -1,0 +1,24 @@
+[package]
+name = "ads-bazaar-shared"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared types, enums and constants used across AdsBazaar Soroban contracts"
+
+[lib]
+crate-type = ["lib"]
+doctest = false
+
+[dependencies]
+soroban-sdk = { workspace = true }
+
+[dev-dependencies]
+# Pinned to work around soroban-env-host declaring an unbounded `>=2.0.0`
+# dependency on ed25519-dalek, which otherwise resolves to the semver-major
+# ed25519-dalek 3.x and fails to build (rand_core trait mismatch in
+# soroban-env-host's testutils). Only needed for `cargo test`'s dependency
+# graph, kept out of `[dependencies]` so it never touches the wasm release
+# build. Remove once upstream bounds this properly.
+# https://github.com/stellar/rs-soroban-env
+ed25519-dalek = { version = "=2.2.0", default-features = false }
