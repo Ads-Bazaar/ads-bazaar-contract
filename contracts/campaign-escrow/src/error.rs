@@ -19,4 +19,6 @@ pub enum Error {
     DeadlinePassed = 8,
     MaxCreatorsReached = 9,
     InsufficientEscrowBalance = 10,
+    NotCampaignOwner = 11,
+    CampaignClosed = 12,
 }
