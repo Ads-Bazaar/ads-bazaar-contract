@@ -18,7 +18,7 @@ mod storage;
 mod types;
 
 pub use error::Error;
-pub use types::{Application, Campaign};
+pub use types::{Application, Campaign, ProtocolConfig};
 
 use ads_bazaar_shared::{CampaignId, CampaignStatus, ApplicationStatus, PayoutAsset};
 use soroban_sdk::{contract, contractimpl, token, Address, Env, String};
@@ -49,6 +49,10 @@ impl CampaignEscrowContract {
         admin.require_auth();
 
         storage::set_admin(&env, &admin);
+        // No separate fee-collection destination exists yet (see the TODO
+        // on `release_payment` below) — treasury defaults to admin until a
+        // future issue adds a dedicated setter.
+        storage::set_treasury(&env, &admin);
         storage::set_dispute_contract(&env, &dispute_contract);
         storage::set_fee_bps(&env, fee_bps);
         Ok(())
@@ -531,6 +535,24 @@ impl CampaignEscrowContract {
         creator: Address,
     ) -> Result<Application, Error> {
         storage::get_application(&env, campaign_id, &creator)
+    }
+
+    /// Read-only lookup of protocol-level config (admin, treasury, fee_bps)
+    /// so the frontend can compute a fee breakdown before funding a
+    /// campaign. Requires no auth. Errors with `Error::NotInitialized` if
+    /// called before `initialize`.
+    pub fn get_protocol_config(env: Env) -> Result<ProtocolConfig, Error> {
+        let admin = storage::get_admin(&env)?;
+        let treasury = storage::get_treasury(&env)?;
+        let fee_bps = storage::get_fee_bps(&env)?;
+
+        storage::extend_instance_ttl(&env);
+
+        Ok(ProtocolConfig {
+            admin,
+            treasury,
+            fee_bps,
+        })
     }
 }
 

@@ -13,10 +13,18 @@ use crate::types::{Application, Campaign};
 const PERSISTENT_BUMP_LEDGERS: u32 = 518_400;
 const PERSISTENT_LIFETIME_THRESHOLD: u32 = 500_000;
 
+/// Same ~30-day-at-5s/ledger bump as `PERSISTENT_BUMP_LEDGERS`, but for
+/// instance storage (admin/treasury/fee_bps/dispute_contract config keys).
+/// Kept as a separate constant since instance and persistent TTL are
+/// tracked independently by the ledger even when the numbers happen to match.
+const INSTANCE_BUMP_LEDGERS: u32 = 518_400;
+const INSTANCE_LIFETIME_THRESHOLD: u32 = 500_000;
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
     Admin,
+    Treasury,
     FeeBps,
     DisputeContract,
     NextCampaignId,
@@ -28,6 +36,15 @@ pub fn is_initialized(env: &Env) -> bool {
     env.storage().instance().has(&DataKey::Admin)
 }
 
+/// Bump the instance entry's TTL. Call this from any read-heavy path that
+/// touches instance storage (config reads, not just writes) so the config
+/// doesn't expire from lack of writes alone.
+pub fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_LEDGERS);
+}
+
 pub fn set_admin(env: &Env, admin: &Address) {
     env.storage().instance().set(&DataKey::Admin, admin);
 }
@@ -36,6 +53,17 @@ pub fn get_admin(env: &Env) -> Result<Address, Error> {
     env.storage()
         .instance()
         .get(&DataKey::Admin)
+        .ok_or(Error::NotInitialized)
+}
+
+pub fn set_treasury(env: &Env, treasury: &Address) {
+    env.storage().instance().set(&DataKey::Treasury, treasury);
+}
+
+pub fn get_treasury(env: &Env) -> Result<Address, Error> {
+    env.storage()
+        .instance()
+        .get(&DataKey::Treasury)
         .ok_or(Error::NotInitialized)
 }
 

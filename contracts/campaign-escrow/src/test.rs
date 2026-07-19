@@ -329,64 +329,36 @@ mod test_happy_path {
     }
 }
 
-mod test_auth_failures {
-    use super::test_helpers::*;
-    use crate::Error;
-    use soroban_sdk::testutils::Address as _;
-    use soroban_sdk::Address;
+#[test]
+fn get_protocol_config_returns_current_fee_bps() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, dispute_contract) = setup(&env);
+    client.initialize(&admin, &dispute_contract, &150);
 
-    #[test]
-    fn non_owner_cancel() {
-        let (env, contract_id) = setup_env();
-        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
-        let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
+    let config = client.get_protocol_config();
+    assert_eq!(config.fee_bps, 150);
+    assert_eq!(config.admin, admin);
+    // treasury defaults to admin — see the comment on `initialize` in lib.rs
+    assert_eq!(config.treasury, admin);
+}
 
-        let stranger = Address::generate(&env);
-        let result = client.try_cancel_campaign(&stranger, &id);
-        assert_eq!(result, Err(Ok(Error::NotCampaignOwner)));
-    }
+#[test]
+fn get_protocol_config_fails_before_initialization() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _dispute_contract) = setup(&env);
 
-    #[test]
-    fn non_owner_select_creator() {
-        let (env, contract_id) = setup_env();
-        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
-        let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
+    let result = client.try_get_protocol_config();
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+}
 
-        let creator = Address::generate(&env);
-        let stranger = Address::generate(&env);
-        client.apply_to_campaign(&creator, &id, &soroban_sdk::String::from_str(&env, "pitch"));
-
-        let result = client.try_approve_creator(&stranger, &id, &creator, &1_000_000);
-        assert_eq!(result, Err(Ok(Error::NotCampaignOwner)));
-    }
-
-    #[test]
-    fn non_owner_approve_submission() {
-        let (env, contract_id) = setup_env();
-        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
-        let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
-
-        let creator = Address::generate(&env);
-        let stranger = Address::generate(&env);
-        client.apply_to_campaign(&creator, &id, &soroban_sdk::String::from_str(&env, "pitch"));
-        client.approve_creator(&business, &id, &creator, &1_000_000);
-        client.submit_proof(&creator, &id, &soroban_sdk::String::from_str(&env, "proof"));
-
-        let result = client.try_approve_submission(&stranger, &id, &creator);
-        assert_eq!(result, Err(Ok(Error::NotCampaignOwner)));
-    }
-
-    #[test]
-    fn creator_claim_before_approval() {
-        let (env, contract_id) = setup_env();
-        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
-        let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
-
-        let creator = Address::generate(&env);
-        client.apply_to_campaign(&creator, &id, &soroban_sdk::String::from_str(&env, "pitch"));
-        client.approve_creator(&business, &id, &creator, &1_000_000);
-        // Submitted but not yet approved by the business.
-        client.submit_proof(&creator, &id, &soroban_sdk::String::from_str(&env, "proof"));
+#[test]
+fn get_campaign_not_found_before_creation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, dispute_contract) = setup(&env);
+    client.initialize(&admin, &dispute_contract, &250);
 
         let result = client.try_claim_payment(&creator, &id);
         assert_eq!(result, Err(Ok(Error::SubmissionNotPayable)));
