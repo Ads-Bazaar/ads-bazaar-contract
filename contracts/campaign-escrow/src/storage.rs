@@ -6,12 +6,11 @@ use soroban_sdk::{contracttype, Address, Env};
 use crate::error::Error;
 use crate::types::{Application, Campaign};
 
-/// Extend persistent entries by roughly this many ledgers on every write
-/// (~30 days at 5s/ledger). TODO(contributors): tune once real rent/TTL
-/// costs on target networks are benchmarked, and consider a max-TTL bump on
-/// read-heavy paths too.
-const PERSISTENT_BUMP_LEDGERS: u32 = 518_400;
-const PERSISTENT_LIFETIME_THRESHOLD: u32 = 500_000;
+/// Extend persistent entries by roughly this many ledgers (~1 year at
+/// 5 s/ledger — the maximum the Stellar network allows for a single
+/// `extend_ttl` call).
+const LEDGER_BUMP: u32 = 535_680;
+const LEDGER_THRESHOLD: u32 = 500_000;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -22,6 +21,14 @@ pub enum DataKey {
     NextCampaignId,
     Campaign(CampaignId),
     Application(CampaignId, Address),
+}
+
+/// Bump the instance TTL so metadata (admin, fee, etc.) doesn't expire
+/// while the contract is actively being used.
+pub fn bump_instance(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
 }
 
 pub fn is_initialized(env: &Env) -> bool {
@@ -76,10 +83,15 @@ pub fn next_campaign_id(env: &Env) -> CampaignId {
 }
 
 pub fn get_campaign(env: &Env, id: CampaignId) -> Result<Campaign, Error> {
+    let key = DataKey::Campaign(id);
+    let campaign = env.storage()
+        .persistent()
+        .get(&key)
+        .ok_or(Error::CampaignNotFound)?;
     env.storage()
         .persistent()
-        .get(&DataKey::Campaign(id))
-        .ok_or(Error::CampaignNotFound)
+        .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+    Ok(campaign)
 }
 
 pub fn set_campaign(env: &Env, campaign: &Campaign) {
@@ -87,8 +99,8 @@ pub fn set_campaign(env: &Env, campaign: &Campaign) {
     env.storage().persistent().set(&key, campaign);
     env.storage().persistent().extend_ttl(
         &key,
-        PERSISTENT_LIFETIME_THRESHOLD,
-        PERSISTENT_BUMP_LEDGERS,
+        LEDGER_THRESHOLD,
+        LEDGER_BUMP,
     );
 }
 
@@ -97,10 +109,15 @@ pub fn get_application(
     campaign_id: CampaignId,
     creator: &Address,
 ) -> Result<Application, Error> {
+    let key = DataKey::Application(campaign_id, creator.clone());
+    let app = env.storage()
+        .persistent()
+        .get(&key)
+        .ok_or(Error::ApplicationNotFound)?;
     env.storage()
         .persistent()
-        .get(&DataKey::Application(campaign_id, creator.clone()))
-        .ok_or(Error::ApplicationNotFound)
+        .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+    Ok(app)
 }
 
 pub fn set_application(env: &Env, application: &Application) {
@@ -108,7 +125,7 @@ pub fn set_application(env: &Env, application: &Application) {
     env.storage().persistent().set(&key, application);
     env.storage().persistent().extend_ttl(
         &key,
-        PERSISTENT_LIFETIME_THRESHOLD,
-        PERSISTENT_BUMP_LEDGERS,
+        LEDGER_THRESHOLD,
+        LEDGER_BUMP,
     );
 }

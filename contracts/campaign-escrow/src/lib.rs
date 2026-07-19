@@ -53,6 +53,7 @@ impl CampaignEscrowContract {
         storage::set_admin(&env, &admin);
         storage::set_dispute_contract(&env, &dispute_contract);
         storage::set_fee_bps(&env, fee_bps);
+        storage::bump_instance(&env);
         Ok(())
     }
 
@@ -78,6 +79,7 @@ impl CampaignEscrowContract {
         completion_deadline: u64,
         metadata_uri: String,
     ) -> Result<CampaignId, Error> {
+        storage::bump_instance(&env);
         todo!("design + implement campaign creation — see doc comment above")
     }
 
@@ -95,6 +97,7 @@ impl CampaignEscrowContract {
         business: Address,
         campaign_id: CampaignId,
     ) -> Result<(), Error> {
+        storage::bump_instance(&env);
         business.require_auth();
         todo!("design + implement escrow funding — see doc comment above")
     }
@@ -111,6 +114,7 @@ impl CampaignEscrowContract {
         campaign_id: CampaignId,
         pitch_uri: String,
     ) -> Result<(), Error> {
+        storage::bump_instance(&env);
         creator.require_auth();
         todo!("design + implement creator applications — see doc comment above")
     }
@@ -129,6 +133,7 @@ impl CampaignEscrowContract {
         creator: Address,
         payout_amount: i128,
     ) -> Result<(), Error> {
+        storage::bump_instance(&env);
         business.require_auth();
         todo!("design + implement creator approval — see doc comment above")
     }
@@ -146,6 +151,7 @@ impl CampaignEscrowContract {
         campaign_id: CampaignId,
         proof_uri: String,
     ) -> Result<(), Error> {
+        storage::bump_instance(&env);
         creator.require_auth();
         todo!("design + implement proof submission/verification — see doc comment above")
     }
@@ -164,6 +170,7 @@ impl CampaignEscrowContract {
         campaign_id: CampaignId,
         creator: Address,
     ) -> Result<(), Error> {
+        storage::bump_instance(&env);
         business.require_auth();
         todo!("design + implement payout release — see doc comment above")
     }
@@ -180,6 +187,7 @@ impl CampaignEscrowContract {
         business: Address,
         campaign_id: CampaignId,
     ) -> Result<(), Error> {
+        storage::bump_instance(&env);
         business.require_auth();
         todo!("design + implement cancellation/refund — see doc comment above")
     }
@@ -199,6 +207,7 @@ impl CampaignEscrowContract {
         campaign_id: CampaignId,
         creator: Address,
     ) -> Result<(), Error> {
+        storage::bump_instance(&env);
         todo!("design + implement dispute freeze hook — see doc comment above")
     }
 
@@ -213,11 +222,13 @@ impl CampaignEscrowContract {
         creator: Address,
         creator_bps: i128,
     ) -> Result<(), Error> {
+        storage::bump_instance(&env);
         todo!("design + implement dispute payout resolution — see doc comment above")
     }
 
     /// Read-only lookup of a campaign's current state.
     pub fn get_campaign(env: Env, campaign_id: CampaignId) -> Result<Campaign, Error> {
+        storage::bump_instance(&env);
         storage::get_campaign(&env, campaign_id)
     }
 
@@ -227,6 +238,7 @@ impl CampaignEscrowContract {
         campaign_id: CampaignId,
         creator: Address,
     ) -> Result<Application, Error> {
+        storage::bump_instance(&env);
         storage::get_application(&env, campaign_id, &creator)
     }
 }
