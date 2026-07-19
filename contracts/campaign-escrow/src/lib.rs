@@ -180,12 +180,14 @@ impl CampaignEscrowContract {
         campaign_id: CampaignId,
     ) -> Result<(), Error> {
         business.require_auth();
-        
+
         let mut campaign = storage::get_campaign(&env, campaign_id)?;
         if campaign.business != business {
             return Err(Error::NotCampaignOwner);
         }
-        if campaign.status != ads_bazaar_shared::CampaignStatus::Funded {
+        if campaign.status != ads_bazaar_shared::CampaignStatus::Funded
+            && campaign.status != ads_bazaar_shared::CampaignStatus::Draft
+        {
             return Err(Error::CampaignClosed);
         }
 
@@ -195,8 +197,13 @@ impl CampaignEscrowContract {
         campaign.escrow_balance = 0;
         storage::set_campaign(&env, &campaign);
 
-        soroban_sdk::token::Client::new(&env, &campaign.asset.token)
-            .transfer(&env.current_contract_address(), &business, &refunded_amount);
+        if refunded_amount > 0 {
+            soroban_sdk::token::Client::new(&env, &campaign.asset.token).transfer(
+                &env.current_contract_address(),
+                &business,
+                &refunded_amount,
+            );
+        }
 
         events::CampaignCancelled {
             campaign_id,

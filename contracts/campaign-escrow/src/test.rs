@@ -99,7 +99,9 @@ fn test_cancel_campaign_success() {
 
     let business = Address::generate(&env);
     let token_admin = Address::generate(&env);
-    let token_addr = env.register().stellar_asset_contract(token_admin);
+    let token_addr = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
     let token = soroban_sdk::token::Client::new(&env, &token_addr);
     let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_addr);
 
@@ -124,7 +126,7 @@ fn test_cancel_campaign_success() {
         metadata_uri: String::from_str(&env, "ipfs://brief"),
         status: ads_bazaar_shared::CampaignStatus::Funded,
     };
-    
+
     env.as_contract(&client.address, || {
         storage::set_campaign(&env, &campaign);
     });
@@ -135,7 +137,10 @@ fn test_cancel_campaign_success() {
     client.cancel_campaign(&business, &campaign_id);
 
     let updated_campaign = client.get_campaign(&campaign_id);
-    assert_eq!(updated_campaign.status, ads_bazaar_shared::CampaignStatus::Cancelled);
+    assert_eq!(
+        updated_campaign.status,
+        ads_bazaar_shared::CampaignStatus::Cancelled
+    );
     assert_eq!(updated_campaign.escrow_balance, 0);
 
     assert_eq!(token.balance(&business), 1_000_000);
@@ -172,11 +177,54 @@ fn test_cancel_campaign_non_owner() {
         metadata_uri: String::from_str(&env, "ipfs://brief"),
         status: ads_bazaar_shared::CampaignStatus::Funded,
     };
-    
+
     env.as_contract(&client.address, || {
         storage::set_campaign(&env, &campaign);
     });
 
     let res = client.try_cancel_campaign(&malicious, &campaign_id);
     assert_eq!(res, Err(Ok(Error::NotCampaignOwner)));
+}
+
+#[test]
+fn test_cancel_draft_campaign_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, dispute_contract) = setup(&env);
+    client.initialize(&admin, &dispute_contract, &250);
+
+    let business = Address::generate(&env);
+    let token_addr = Address::generate(&env);
+    let asset = ads_bazaar_shared::PayoutAsset {
+        token: token_addr,
+        symbol: String::from_str(&env, "USDC"),
+    };
+
+    let campaign_id = 1;
+    let campaign = Campaign {
+        id: campaign_id,
+        business: business.clone(),
+        asset,
+        total_budget: 1_000_000,
+        escrow_balance: 0,
+        max_creators: 5,
+        approved_count: 0,
+        application_deadline: env.ledger().timestamp() + 86_400,
+        completion_deadline: env.ledger().timestamp() + 604_800,
+        metadata_uri: String::from_str(&env, "ipfs://brief"),
+        status: ads_bazaar_shared::CampaignStatus::Draft,
+    };
+
+    env.as_contract(&client.address, || {
+        storage::set_campaign(&env, &campaign);
+    });
+
+    client.cancel_campaign(&business, &campaign_id);
+
+    let updated_campaign = client.get_campaign(&campaign_id);
+    assert_eq!(
+        updated_campaign.status,
+        ads_bazaar_shared::CampaignStatus::Cancelled
+    );
+    assert_eq!(updated_campaign.escrow_balance, 0);
 }
