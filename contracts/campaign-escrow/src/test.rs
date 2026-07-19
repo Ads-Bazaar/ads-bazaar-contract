@@ -51,6 +51,30 @@ fn initialize_rejects_out_of_range_fee() {
 }
 
 #[test]
+fn get_protocol_config_returns_current_fee_bps() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, dispute_contract) = setup(&env);
+    client.initialize(&admin, &dispute_contract, &150);
+
+    let config = client.get_protocol_config();
+    assert_eq!(config.fee_bps, 150);
+    assert_eq!(config.admin, admin);
+    // treasury defaults to admin — see the comment on `initialize` in lib.rs
+    assert_eq!(config.treasury, admin);
+}
+
+#[test]
+fn get_protocol_config_fails_before_initialization() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _dispute_contract) = setup(&env);
+
+    let result = client.try_get_protocol_config();
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+}
+
+#[test]
 fn get_campaign_not_found_before_creation() {
     let env = Env::default();
     env.mock_all_auths();
