@@ -1,11 +1,4 @@
-//! Event definitions for the campaign-escrow contract, using the
-//! `#[contractevent]` macro so events are part of the contract's on-chain
-//! interface spec (discoverable by indexers/SDKs), not just ad-hoc
-//! `env.events().publish(...)` calls.
-//!
-//! None of these are published yet — wire up `.publish(&env)` calls at the
-//! matching point in `lib.rs` as each `todo!()` handler is implemented.
-#![allow(dead_code)]
+﻿#![allow(dead_code)]
 
 use ads_bazaar_shared::CampaignId;
 use soroban_sdk::{contractevent, Address};
@@ -70,4 +63,18 @@ pub struct CampaignCancelled {
     #[topic]
     pub campaign_id: CampaignId,
     pub refunded_amount: i128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ContractPaused {
+    #[topic]
+    pub admin: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ContractUnpaused {
+    #[topic]
+    pub admin: Address,
 }

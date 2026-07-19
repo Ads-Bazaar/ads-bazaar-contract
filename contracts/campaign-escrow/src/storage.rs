@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+﻿#![allow(dead_code)]
 
 use ads_bazaar_shared::CampaignId;
 use soroban_sdk::{contracttype, Address, Env};
@@ -6,17 +6,9 @@ use soroban_sdk::{contracttype, Address, Env};
 use crate::error::Error;
 use crate::types::{Application, Campaign};
 
-/// Extend persistent entries by roughly this many ledgers on every write
-/// (~30 days at 5s/ledger). TODO(contributors): tune once real rent/TTL
-/// costs on target networks are benchmarked, and consider a max-TTL bump on
-/// read-heavy paths too.
 const PERSISTENT_BUMP_LEDGERS: u32 = 518_400;
 const PERSISTENT_LIFETIME_THRESHOLD: u32 = 500_000;
 
-/// Same ~30-day-at-5s/ledger bump as `PERSISTENT_BUMP_LEDGERS`, but for
-/// instance storage (admin/treasury/fee_bps/dispute_contract config keys).
-/// Kept as a separate constant since instance and persistent TTL are
-/// tracked independently by the ledger even when the numbers happen to match.
 const INSTANCE_BUMP_LEDGERS: u32 = 518_400;
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 500_000;
 
@@ -30,15 +22,13 @@ pub enum DataKey {
     NextCampaignId,
     Campaign(CampaignId),
     Application(CampaignId, Address),
+    Paused,
 }
 
 pub fn is_initialized(env: &Env) -> bool {
     env.storage().instance().has(&DataKey::Admin)
 }
 
-/// Bump the instance entry's TTL. Call this from any read-heavy path that
-/// touches instance storage (config reads, not just writes) so the config
-/// doesn't expire from lack of writes alone.
 pub fn extend_instance_ttl(env: &Env) {
     env.storage()
         .instance()
@@ -139,4 +129,15 @@ pub fn set_application(env: &Env, application: &Application) {
         PERSISTENT_LIFETIME_THRESHOLD,
         PERSISTENT_BUMP_LEDGERS,
     );
+}
+
+pub fn get_paused(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::Paused)
+        .unwrap_or(false)
+}
+
+pub fn set_paused(env: &Env, paused: bool) {
+    env.storage().instance().set(&DataKey::Paused, &paused);
 }

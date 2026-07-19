@@ -1,18 +1,4 @@
-//! # ads-bazaar-campaign-escrow
-//!
-//! Holds business-funded campaign budgets in escrow and releases them to
-//! approved creators. This crate currently ships the **data model, storage
-//! schema, error types, events and public API surface** for the full
-//! escrow lifecycle; the state-transition logic for campaign creation,
-//! funding, creator approval, proof review and payout release is left as
-//! `todo!()` for contributors to design and implement (see inline TODOs and
-//! `docs/ARCHITECTURE.md` at the repo root).
-//!
-//! Money movement is expected to go through the standard SEP-41 token
-//! `Client` (`soroban_sdk::token::Client`) against `Campaign::asset.token`,
-//! which is how a single contract deployment supports XLM, Naira-pegged
-//! stablecoins, USDC, etc. without per-asset special-casing.
-#![no_std]
+﻿#![no_std]
 
 mod error;
 mod events;
@@ -25,17 +11,27 @@ pub use types::{Application, Campaign, ProtocolConfig};
 use ads_bazaar_shared::{CampaignId, PayoutAsset};
 use soroban_sdk::{contract, contractimpl, Address, Env, String};
 
+fn require_admin(env: &Env, admin: &Address) -> Result<(), Error> {
+    admin.require_auth();
+    let stored_admin = storage::get_admin(env)?;
+    if stored_admin != *admin {
+        return Err(Error::Unauthorized);
+    }
+    Ok(())
+}
+
+fn require_not_paused(env: &Env) -> Result<(), Error> {
+    if storage::get_paused(env) {
+        return Err(Error::ContractPaused);
+    }
+    Ok(())
+}
+
 #[contract]
 pub struct CampaignEscrowContract;
 
 #[contractimpl]
 impl CampaignEscrowContract {
-    /// One-time setup. Must be called before any other function.
-    ///
-    /// `dispute_contract` is the only address permitted to call
-    /// `freeze_for_dispute` / `resolve_dispute_payout` once those are
-    /// implemented — it should be the deployed `dispute-resolution`
-    /// contract's address.
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -51,26 +47,30 @@ impl CampaignEscrowContract {
         admin.require_auth();
 
         storage::set_admin(&env, &admin);
-        // No separate fee-collection destination exists yet (see the TODO
-        // on `release_payment` below) — treasury defaults to admin until a
-        // future issue adds a dedicated setter.
         storage::set_treasury(&env, &admin);
         storage::set_dispute_contract(&env, &dispute_contract);
         storage::set_fee_bps(&env, fee_bps);
         Ok(())
     }
 
-    /// Create a new draft campaign owned by `business`. Not yet escrowed —
-    /// call `fund_campaign` afterwards to deposit `total_budget`.
-    ///
-    /// TODO(contributors): implement. Should at minimum:
-    /// - `business.require_auth()`
-    /// - validate `total_budget > 0`, `max_creators > 0`
-    /// - validate `application_deadline < completion_deadline` and both are
-    ///   in the future (`env.ledger().timestamp()`)
-    /// - allocate an id via `storage::next_campaign_id`, persist a
-    ///   `Campaign` in `CampaignStatus::Draft` with `escrow_balance: 0`
-    /// - emit `events::campaign_created`
+    pub fn pause(env: Env, admin: Address) -> Result<(), Error> {
+        require_admin(&env, &admin)?;
+        storage::set_paused(&env, true);
+        events::ContractPaused { admin }.publish(&env);
+        Ok(())
+    }
+
+    pub fn unpause(env: Env, admin: Address) -> Result<(), Error> {
+        require_admin(&env, &admin)?;
+        storage::set_paused(&env, false);
+        events::ContractUnpaused { admin }.publish(&env);
+        Ok(())
+    }
+
+    pub fn is_paused(env: Env) -> bool {
+        storage::get_paused(&env)
+    }
+
     #[allow(unused_variables, clippy::too_many_arguments)]
     pub fn create_campaign(
         env: Env,
@@ -82,32 +82,21 @@ impl CampaignEscrowContract {
         completion_deadline: u64,
         metadata_uri: String,
     ) -> Result<CampaignId, Error> {
-        todo!("design + implement campaign creation — see doc comment above")
+        require_not_paused(&env)?;
+        todo!("design + implement campaign creation")
     }
 
-    /// Transfer `campaign.total_budget` of `campaign.asset.token` from
-    /// `business` into this contract, moving the campaign from `Draft` to
-    /// `Funded`.
-    ///
-    /// TODO(contributors): implement using
-    /// `soroban_sdk::token::Client::new(&env, &campaign.asset.token).transfer(...)`.
-    /// Decide whether partial/top-up funding is allowed or funding is
-    /// strictly all-at-once.
     #[allow(unused_variables)]
     pub fn fund_campaign(
         env: Env,
         business: Address,
         campaign_id: CampaignId,
     ) -> Result<(), Error> {
+        require_not_paused(&env)?;
         business.require_auth();
-        todo!("design + implement escrow funding — see doc comment above")
+        todo!("design + implement escrow funding")
     }
 
-    /// Creator applies to an active (`Funded`) campaign.
-    ///
-    /// TODO(contributors): implement. Consider: can a creator apply twice?
-    /// What happens at `application_deadline`? Should this be permissionless
-    /// or allow-listed?
     #[allow(unused_variables)]
     pub fn apply_to_campaign(
         env: Env,
@@ -115,16 +104,11 @@ impl CampaignEscrowContract {
         campaign_id: CampaignId,
         pitch_uri: String,
     ) -> Result<(), Error> {
+        require_not_paused(&env)?;
         creator.require_auth();
-        todo!("design + implement creator applications — see doc comment above")
+        todo!("design + implement creator applications")
     }
 
-    /// Business approves a pending application and sets the agreed payout
-    /// amount for that creator.
-    ///
-    /// TODO(contributors): implement. Must guard against approving more
-    /// creators than `max_creators`, or approving a total `payout_amount`
-    /// that exceeds `escrow_balance`.
     #[allow(unused_variables)]
     pub fn approve_creator(
         env: Env,
@@ -133,16 +117,11 @@ impl CampaignEscrowContract {
         creator: Address,
         payout_amount: i128,
     ) -> Result<(), Error> {
+        require_not_paused(&env)?;
         business.require_auth();
-        todo!("design + implement creator approval — see doc comment above")
+        todo!("design + implement creator approval")
     }
 
-    /// Approved creator submits proof of completed work.
-    ///
-    /// TODO(contributors): implement. Decide the proof format/verification
-    /// story (off-chain URI only vs. on-chain hash commitment, oracle
-    /// attestation, etc.) — this is likely the single biggest open design
-    /// question in this contract.
     #[allow(unused_variables)]
     pub fn submit_proof(
         env: Env,
@@ -150,17 +129,11 @@ impl CampaignEscrowContract {
         campaign_id: CampaignId,
         proof_uri: String,
     ) -> Result<(), Error> {
+        require_not_paused(&env)?;
         creator.require_auth();
-        todo!("design + implement proof submission/verification — see doc comment above")
+        todo!("design + implement proof submission/verification")
     }
 
-    /// Release an approved creator's escrowed payout after proof is
-    /// accepted, deducting the platform fee configured at `initialize`.
-    ///
-    /// TODO(contributors): implement. Decide who can trigger release
-    /// (business only? auto-release after a timeout past proof submission?)
-    /// and how the platform fee is collected (transferred to `admin`
-    /// immediately, or accrued for later sweep).
     #[allow(unused_variables)]
     pub fn release_payment(
         env: Env,
@@ -168,48 +141,32 @@ impl CampaignEscrowContract {
         campaign_id: CampaignId,
         creator: Address,
     ) -> Result<(), Error> {
+        require_not_paused(&env)?;
         business.require_auth();
-        todo!("design + implement payout release — see doc comment above")
+        todo!("design + implement payout release")
     }
 
-    /// Cancel a campaign and refund any remaining escrow balance to the
-    /// business.
-    ///
-    /// TODO(contributors): implement. Decide whether cancellation is allowed
-    /// once creators are already approved/active, and if so how their
-    /// pending payouts are handled.
     #[allow(unused_variables)]
     pub fn cancel_campaign(
         env: Env,
         business: Address,
         campaign_id: CampaignId,
     ) -> Result<(), Error> {
+        require_not_paused(&env)?;
         business.require_auth();
-        todo!("design + implement cancellation/refund — see doc comment above")
+        todo!("design + implement cancellation/refund")
     }
 
-    /// Freeze a campaign's escrow so funds cannot be released while a
-    /// dispute is under review. Callable only by the trusted
-    /// `dispute-resolution` contract set at `initialize`.
-    ///
-    /// TODO(contributors): implement once `dispute-resolution`'s call
-    /// interface is finalized. This should be an authenticated
-    /// contract-to-contract call (verify `env.current_contract_address()`
-    /// caller via `require_auth` on the dispute contract's own invocation,
-    /// or restrict by checking `get_dispute_contract` matches the invoker).
     #[allow(unused_variables)]
     pub fn freeze_for_dispute(
         env: Env,
         campaign_id: CampaignId,
         creator: Address,
     ) -> Result<(), Error> {
-        todo!("design + implement dispute freeze hook — see doc comment above")
+        require_not_paused(&env)?;
+        todo!("design + implement dispute freeze hook")
     }
 
-    /// Apply a dispute outcome (from `dispute-resolution`) by releasing or
-    /// refunding the frozen escrow amount accordingly.
-    ///
-    /// TODO(contributors): implement alongside `freeze_for_dispute`.
     #[allow(unused_variables)]
     pub fn resolve_dispute_payout(
         env: Env,
@@ -217,15 +174,14 @@ impl CampaignEscrowContract {
         creator: Address,
         creator_bps: i128,
     ) -> Result<(), Error> {
-        todo!("design + implement dispute payout resolution — see doc comment above")
+        require_not_paused(&env)?;
+        todo!("design + implement dispute payout resolution")
     }
 
-    /// Read-only lookup of a campaign's current state.
     pub fn get_campaign(env: Env, campaign_id: CampaignId) -> Result<Campaign, Error> {
         storage::get_campaign(&env, campaign_id)
     }
 
-    /// Read-only lookup of a creator's application to a campaign.
     pub fn get_application(
         env: Env,
         campaign_id: CampaignId,
@@ -234,10 +190,6 @@ impl CampaignEscrowContract {
         storage::get_application(&env, campaign_id, &creator)
     }
 
-    /// Read-only lookup of protocol-level config (admin, treasury, fee_bps)
-    /// so the frontend can compute a fee breakdown before funding a
-    /// campaign. Requires no auth. Errors with `Error::NotInitialized` if
-    /// called before `initialize`.
     pub fn get_protocol_config(env: Env) -> Result<ProtocolConfig, Error> {
         let admin = storage::get_admin(&env)?;
         let treasury = storage::get_treasury(&env)?;
