@@ -3,9 +3,11 @@ use soroban_sdk::{contracttype, Address, String};
 
 /// A creator campaign funded and escrowed by a single business.
 ///
-/// `escrow_balance` is tracked separately from `total_budget` so partial
+/// escrow_balance is tracked separately from 	otal_budget so partial
 /// releases (once implemented) can be reconciled against what is actually
 /// still held by the contract, independent of what was originally deposited.
+/// ee_bps is snapshotted at creation time so admin fee changes don't
+/// affect live campaigns.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Campaign {
@@ -16,6 +18,8 @@ pub struct Campaign {
     pub escrow_balance: i128,
     pub max_creators: u32,
     pub approved_count: u32,
+    /// Platform fee in basis points, snapshotted at campaign creation.
+    pub fee_bps: u32,
     /// Ledger timestamp (unix seconds) after which new applications are rejected.
     pub application_deadline: u64,
     /// Ledger timestamp (unix seconds) by which approved creators must submit proof.
@@ -27,10 +31,10 @@ pub struct Campaign {
 
 /// A single creator's application to a campaign.
 ///
-/// TODO(contributors): `payout_amount` is set at approval time in the current
+/// TODO(contributors): payout_amount is set at approval time in the current
 /// design sketch (business decides per-creator pay when approving). Revisit
-/// if campaigns should instead split `total_budget` evenly across
-/// `max_creators`, or support tiered/milestone payouts.
+/// if campaigns should instead split 	otal_budget evenly across
+/// max_creators, or support tiered/milestone payouts.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Application {
@@ -43,13 +47,13 @@ pub struct Application {
 }
 
 /// Snapshot of protocol-level configuration, returned by
-/// `get_protocol_config` so the frontend can compute fee breakdowns before a
+/// get_protocol_config so the frontend can compute fee breakdowns before a
 /// business funds a campaign.
 ///
-/// `treasury` defaults to `admin` at `initialize` time â€” there is no
+/// 	reasury defaults to dmin at initialize time — there is no
 /// separate fee-collection destination yet (see the TODO on
-/// `release_payment` in `lib.rs`). A future issue can add a
-/// `set_treasury` admin-only setter if/when that needs to diverge.
+/// elease_payment in lib.rs). A future issue can add a
+/// set_treasury admin-only setter if/when that needs to diverge.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProtocolConfig {
