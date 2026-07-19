@@ -37,6 +37,7 @@ impl DisputeResolutionContract {
 
         storage::set_admin(&env, &admin);
         storage::set_escrow_contract(&env, &escrow_contract);
+        storage::bump_instance(&env);
         Ok(())
     }
 
@@ -55,6 +56,7 @@ impl DisputeResolutionContract {
         creator: Address,
         reason_uri: String,
     ) -> Result<DisputeId, Error> {
+        storage::bump_instance(&env);
         raised_by.require_auth();
         todo!("design + implement dispute raising — see doc comment above")
     }
@@ -69,6 +71,7 @@ impl DisputeResolutionContract {
         dispute_id: DisputeId,
         arbiter: Address,
     ) -> Result<(), Error> {
+        storage::bump_instance(&env);
         admin.require_auth();
         todo!("design + implement arbiter assignment — see doc comment above")
     }
@@ -85,12 +88,14 @@ impl DisputeResolutionContract {
         dispute_id: DisputeId,
         outcome: DisputeOutcome,
     ) -> Result<(), Error> {
+        storage::bump_instance(&env);
         arbiter.require_auth();
         todo!("design + implement dispute resolution — see doc comment above")
     }
 
     /// Read-only lookup of a dispute's current state.
     pub fn get_dispute(env: Env, dispute_id: DisputeId) -> Result<Dispute, Error> {
+        storage::bump_instance(&env);
         storage::get_dispute(&env, dispute_id)
     }
 }

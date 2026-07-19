@@ -6,8 +6,8 @@ use soroban_sdk::{contracttype, Address, Env};
 use crate::error::Error;
 use crate::types::Dispute;
 
-const PERSISTENT_BUMP_LEDGERS: u32 = 518_400;
-const PERSISTENT_LIFETIME_THRESHOLD: u32 = 500_000;
+const LEDGER_BUMP: u32 = 535_680;
+const LEDGER_THRESHOLD: u32 = 500_000;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -16,6 +16,12 @@ pub enum DataKey {
     EscrowContract,
     NextDisputeId,
     Dispute(DisputeId),
+}
+
+pub fn bump_instance(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
 }
 
 pub fn is_initialized(env: &Env) -> bool {
@@ -59,10 +65,15 @@ pub fn next_dispute_id(env: &Env) -> DisputeId {
 }
 
 pub fn get_dispute(env: &Env, id: DisputeId) -> Result<Dispute, Error> {
+    let key = DataKey::Dispute(id);
+    let dispute = env.storage()
+        .persistent()
+        .get(&key)
+        .ok_or(Error::DisputeNotFound)?;
     env.storage()
         .persistent()
-        .get(&DataKey::Dispute(id))
-        .ok_or(Error::DisputeNotFound)
+        .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+    Ok(dispute)
 }
 
 pub fn set_dispute(env: &Env, id: DisputeId, dispute: &Dispute) {
@@ -70,7 +81,7 @@ pub fn set_dispute(env: &Env, id: DisputeId, dispute: &Dispute) {
     env.storage().persistent().set(&key, dispute);
     env.storage().persistent().extend_ttl(
         &key,
-        PERSISTENT_LIFETIME_THRESHOLD,
-        PERSISTENT_BUMP_LEDGERS,
+        LEDGER_THRESHOLD,
+        LEDGER_BUMP,
     );
 }
