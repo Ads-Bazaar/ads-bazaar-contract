@@ -19,7 +19,7 @@ pub struct Campaign {
     pub max_creators: u32,
     pub approved_count: u32,
     /// Platform fee in basis points, snapshotted at campaign creation.
-    pub fee_bps: u32,
+    pub fee_bps: i128,
     /// Ledger timestamp (unix seconds) after which new applications are rejected.
     pub application_deadline: u64,
     /// Ledger timestamp (unix seconds) by which approved creators must submit proof.
@@ -52,7 +52,8 @@ pub struct Application {
 ///
 /// 	reasury defaults to dmin at initialize time — there is no
 /// separate fee-collection destination yet (see the TODO on
-/// elease_payment in lib.rs). A future issue can add a
+/// 
+elease_payment in lib.rs). A future issue can add a
 /// set_treasury admin-only setter if/when that needs to diverge.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
