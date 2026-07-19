@@ -59,7 +59,13 @@ mod test_helpers {
         env: &'a Env,
         contract_id: &Address,
         fee_bps: i128,
-    ) -> (CampaignEscrowContractClient<'a>, Address, Address, Address, Address) {
+    ) -> (
+        CampaignEscrowContractClient<'a>,
+        Address,
+        Address,
+        Address,
+        Address,
+    ) {
         let client = CampaignEscrowContractClient::new(env, contract_id);
         let admin = Address::generate(env);
         let dispute = Address::generate(env);
@@ -156,9 +162,26 @@ mod test_initialize {
 
 mod test_happy_path {
     use super::test_helpers::*;
+    use crate::CampaignEscrowContractClient;
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::token::Client as TokenClient;
-    use soroban_sdk::Address;
+    use soroban_sdk::{Address, Env};
+
+    /// Drive a campaign to the point where `creator` has an approved,
+    /// payable submission: applied → selected → proof submitted → approved.
+    fn run_to_payable(
+        env: &Env,
+        client: &CampaignEscrowContractClient,
+        business: &Address,
+        creator: &Address,
+        id: &u64,
+        payout: i128,
+    ) {
+        client.apply_to_campaign(creator, id, &soroban_sdk::String::from_str(env, "pitch"));
+        client.approve_creator(business, id, creator, &payout);
+        client.submit_proof(creator, id, &soroban_sdk::String::from_str(env, "proof"));
+        client.approve_submission(business, id, creator);
+    }
 
     #[test]
     fn full_lifecycle() {
@@ -170,10 +193,7 @@ mod test_happy_path {
         let gross: i128 = 1_000_000;
         let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
 
-        client.apply_to_campaign(&creator, &id, &soroban_sdk::String::from_str(&env, "pitch"));
-        client.approve_creator(&business, &id, &creator, &gross);
-        client.submit_proof(&creator, &id, &soroban_sdk::String::from_str(&env, "proof"));
-        client.approve_submission(&business, &id, &creator);
+        run_to_payable(&env, &client, &business, &creator, &id, gross);
 
         let creator_before = token_client.balance(&creator);
         let treasury_before = token_client.balance(&admin);
@@ -196,10 +216,7 @@ mod test_happy_path {
         let gross: i128 = 2_000_000;
         let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
 
-        client.apply_to_campaign(&creator, &id, &soroban_sdk::String::from_str(&env, "pitch"));
-        client.approve_creator(&business, &id, &creator, &gross);
-        client.submit_proof(&creator, &id, &soroban_sdk::String::from_str(&env, "proof"));
-        client.approve_submission(&business, &id, &creator);
+        run_to_payable(&env, &client, &business, &creator, &id, gross);
         client.claim_payment(&creator, &id);
 
         let fee = gross * 50 / ads_bazaar_shared::BASIS_POINTS_DENOMINATOR;
@@ -246,7 +263,7 @@ mod test_happy_path {
         let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
 
         client.cancel_campaign(&business, &id);
-        // Business balance is fully restored.
+        // Business balance is fully restored (no commitments outstanding).
         assert_eq!(token_client.balance(&business), business_before);
         assert_eq!(token_client.balance(&contract_id), 0);
     }
@@ -274,7 +291,10 @@ mod test_happy_path {
         let business_before = token_client.balance(&business);
         client.reclaim_surplus(&business, &id);
         // Surplus == (5 - 2) * payout == 3 * payout_per_creator.
-        assert_eq!(token_client.balance(&business), business_before + payout * 3);
+        assert_eq!(
+            token_client.balance(&business),
+            business_before + payout * 3
+        );
         assert_eq!(token_client.balance(&contract_id), 0);
     }
 
@@ -290,11 +310,19 @@ mod test_happy_path {
 
         client.apply_to_campaign(&creator, &id, &soroban_sdk::String::from_str(&env, "pitch"));
         client.approve_creator(&business, &id, &creator, &gross);
-        client.submit_proof(&creator, &id, &soroban_sdk::String::from_str(&env, "proof-v1"));
+        client.submit_proof(
+            &creator,
+            &id,
+            &soroban_sdk::String::from_str(&env, "proof-v1"),
+        );
         // Business rejects the proof.
         client.reject_submission(&business, &id, &creator);
         // Creator resubmits.
-        client.submit_proof(&creator, &id, &soroban_sdk::String::from_str(&env, "proof-v2"));
+        client.submit_proof(
+            &creator,
+            &id,
+            &soroban_sdk::String::from_str(&env, "proof-v2"),
+        );
         client.approve_submission(&business, &id, &creator);
 
         let creator_before = token_client.balance(&creator);
@@ -313,53 +341,210 @@ mod test_happy_path {
 
         let c1 = Address::generate(&env);
         let c2 = Address::generate(&env);
+        // Two creators are selected (committing 1_000_000 each) but never
+        // submit proof — their payouts stay reserved against escrow.
         for c in [&c1, &c2] {
             client.apply_to_campaign(c, &id, &soroban_sdk::String::from_str(&env, "pitch"));
             client.approve_creator(&business, &id, c, &1_000_000);
         }
 
-        // Neither creator submitted proof; advance past the content deadline.
+        // Advance past the content deadline.
         advance_time(&env, 604_800 + 10);
 
         let business_before = token_client.balance(&business);
         client.expire_campaign(&business, &id);
-        // Full budget refunded to the business.
-        assert_eq!(token_client.balance(&business), business_before + budget);
+        // Only the unallocated balance (budget - committed) is refunded.
+        let committed = 1_000_000 * 2;
+        assert_eq!(
+            token_client.balance(&business),
+            business_before + budget - committed
+        );
+        // Reserved funds remain in the contract for the selected creators.
+        assert_eq!(token_client.balance(&contract_id), committed);
+    }
+
+    // --- Fund-safety regression tests: committed payouts must survive
+    // cancel / expire / reclaim and remain claimable by the creator. ---
+
+    #[test]
+    fn cancel_preserves_committed_payout() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 0);
+        let token_client = TokenClient::new(&env, &token);
+
+        let payout: i128 = 1_000_000;
+        let budget: i128 = payout * 5;
+        let id = create_funded_campaign(&env, &client, &business, &token, budget, 5);
+
+        let creator = Address::generate(&env);
+        run_to_payable(&env, &client, &business, &creator, &id, payout);
+
+        // Business cancels before the creator claims.
+        let business_before = token_client.balance(&business);
+        client.cancel_campaign(&business, &id);
+        // Business recovers only the unallocated (budget - payout) portion.
+        assert_eq!(
+            token_client.balance(&business),
+            business_before + budget - payout
+        );
+        // The committed payout is still held by the contract.
+        assert_eq!(token_client.balance(&contract_id), payout);
+
+        // The approved creator can still claim their payout after cancellation.
+        let creator_before = token_client.balance(&creator);
+        client.claim_payment(&creator, &id);
+        assert_eq!(token_client.balance(&creator), creator_before + payout);
+        assert_eq!(token_client.balance(&contract_id), 0);
+    }
+
+    #[test]
+    fn expire_preserves_committed_payout() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 0);
+        let token_client = TokenClient::new(&env, &token);
+
+        let payout: i128 = 1_000_000;
+        let budget: i128 = payout * 5;
+        let id = create_funded_campaign(&env, &client, &business, &token, budget, 5);
+
+        let creator = Address::generate(&env);
+        run_to_payable(&env, &client, &business, &creator, &id, payout);
+
+        // Advance past the content deadline, then expire.
+        advance_time(&env, 604_800 + 10);
+        let business_before = token_client.balance(&business);
+        client.expire_campaign(&business, &id);
+        assert_eq!(
+            token_client.balance(&business),
+            business_before + budget - payout
+        );
+        assert_eq!(token_client.balance(&contract_id), payout);
+
+        // Creator still gets paid after expiry.
+        let creator_before = token_client.balance(&creator);
+        client.claim_payment(&creator, &id);
+        assert_eq!(token_client.balance(&creator), creator_before + payout);
+        assert_eq!(token_client.balance(&contract_id), 0);
+    }
+
+    #[test]
+    fn reclaim_preserves_committed_payout() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 0);
+        let token_client = TokenClient::new(&env, &token);
+
+        let payout: i128 = 1_000_000;
+        let budget: i128 = payout * 5;
+        let id = create_funded_campaign(&env, &client, &business, &token, budget, 5);
+
+        let creator = Address::generate(&env);
+        run_to_payable(&env, &client, &business, &creator, &id, payout);
+
+        // Business reclaims surplus before the creator claims.
+        let business_before = token_client.balance(&business);
+        client.reclaim_surplus(&business, &id);
+        assert_eq!(
+            token_client.balance(&business),
+            business_before + budget - payout
+        );
+        assert_eq!(token_client.balance(&contract_id), payout);
+
+        // Creator still gets paid after the reclaim.
+        let creator_before = token_client.balance(&creator);
+        client.claim_payment(&creator, &id);
+        assert_eq!(token_client.balance(&creator), creator_before + payout);
         assert_eq!(token_client.balance(&contract_id), 0);
     }
 }
 
-#[test]
-fn get_protocol_config_returns_current_fee_bps() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, dispute_contract) = setup(&env);
-    client.initialize(&admin, &dispute_contract, &150);
+mod test_protocol_config {
+    use super::test_helpers::setup_env;
+    use crate::{CampaignEscrowContractClient, Error};
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::Address;
 
-    let config = client.get_protocol_config();
-    assert_eq!(config.fee_bps, 150);
-    assert_eq!(config.admin, admin);
-    // treasury defaults to admin — see the comment on `initialize` in lib.rs
-    assert_eq!(config.treasury, admin);
+    #[test]
+    fn get_protocol_config_returns_current_fee_bps() {
+        let (env, contract_id) = setup_env();
+        let client = CampaignEscrowContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let dispute_contract = Address::generate(&env);
+        client.initialize(&admin, &dispute_contract, &150);
+
+        let config = client.get_protocol_config();
+        assert_eq!(config.fee_bps, 150);
+        assert_eq!(config.admin, admin);
+        // treasury defaults to admin — see the comment on `initialize` in lib.rs
+        assert_eq!(config.treasury, admin);
+    }
+
+    #[test]
+    fn get_protocol_config_fails_before_initialization() {
+        let (env, contract_id) = setup_env();
+        let client = CampaignEscrowContractClient::new(&env, &contract_id);
+
+        let result = client.try_get_protocol_config();
+        assert_eq!(result, Err(Ok(Error::NotInitialized)));
+    }
 }
 
-#[test]
-fn get_protocol_config_fails_before_initialization() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, _admin, _dispute_contract) = setup(&env);
+mod test_auth_failures {
+    use super::test_helpers::*;
+    use crate::Error;
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{Address, String};
 
-    let result = client.try_get_protocol_config();
-    assert_eq!(result, Err(Ok(Error::NotInitialized)));
-}
+    #[test]
+    fn non_owner_cancel() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+        let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
 
-#[test]
-fn get_campaign_not_found_before_creation() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, dispute_contract) = setup(&env);
-    client.initialize(&admin, &dispute_contract, &250);
+        let stranger = Address::generate(&env);
+        let result = client.try_cancel_campaign(&stranger, &id);
+        assert_eq!(result, Err(Ok(Error::NotCampaignOwner)));
+    }
 
+    #[test]
+    fn non_owner_select_creator() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+        let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
+
+        let creator = Address::generate(&env);
+        let stranger = Address::generate(&env);
+        let result = client.try_approve_creator(&stranger, &id, &creator, &1_000_000);
+        assert_eq!(result, Err(Ok(Error::NotCampaignOwner)));
+    }
+
+    #[test]
+    fn non_owner_approve_submission() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+        let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
+
+        let creator = Address::generate(&env);
+        client.apply_to_campaign(&creator, &id, &String::from_str(&env, "pitch"));
+        client.approve_creator(&business, &id, &creator, &1_000_000);
+        client.submit_proof(&creator, &id, &String::from_str(&env, "proof"));
+
+        let stranger = Address::generate(&env);
+        let result = client.try_approve_submission(&stranger, &id, &creator);
+        assert_eq!(result, Err(Ok(Error::NotCampaignOwner)));
+    }
+
+    #[test]
+    fn creator_claim_before_approval() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+        let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
+
+        let creator = Address::generate(&env);
+        client.apply_to_campaign(&creator, &id, &String::from_str(&env, "pitch"));
+        client.approve_creator(&business, &id, &creator, &1_000_000);
+        client.submit_proof(&creator, &id, &String::from_str(&env, "proof"));
+
+        // Proof is submitted but not yet approved by the business.
         let result = client.try_claim_payment(&creator, &id);
         assert_eq!(result, Err(Ok(Error::SubmissionNotPayable)));
     }
@@ -371,12 +556,8 @@ fn get_campaign_not_found_before_creation() {
         let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
 
         let creator = Address::generate(&env);
-        client.apply_to_campaign(&creator, &id, &soroban_sdk::String::from_str(&env, "pitch"));
-        let result = client.try_apply_to_campaign(
-            &creator,
-            &id,
-            &soroban_sdk::String::from_str(&env, "pitch2"),
-        );
+        client.apply_to_campaign(&creator, &id, &String::from_str(&env, "pitch"));
+        let result = client.try_apply_to_campaign(&creator, &id, &String::from_str(&env, "pitch2"));
         assert_eq!(result, Err(Ok(Error::AlreadyApplied)));
     }
 
@@ -387,7 +568,7 @@ fn get_campaign_not_found_before_creation() {
         let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
 
         let creator = Address::generate(&env);
-        client.apply_to_campaign(&creator, &id, &soroban_sdk::String::from_str(&env, "pitch"));
+        client.apply_to_campaign(&creator, &id, &String::from_str(&env, "pitch"));
         client.approve_creator(&business, &id, &creator, &1_000_000);
         let result = client.try_approve_creator(&business, &id, &creator, &1_000_000);
         assert_eq!(result, Err(Ok(Error::AlreadySelected)));
@@ -422,11 +603,7 @@ mod test_deadline_enforcement {
         advance_time(&env, 86_400 + 10);
 
         let creator = Address::generate(&env);
-        let result = client.try_apply_to_campaign(
-            &creator,
-            &id,
-            &String::from_str(&env, "pitch"),
-        );
+        let result = client.try_apply_to_campaign(&creator, &id, &String::from_str(&env, "pitch"));
         assert_eq!(result, Err(Ok(Error::ApplicationDeadlinePassed)));
     }
 

@@ -20,7 +20,7 @@ mod types;
 pub use error::Error;
 pub use types::{Application, Campaign, ProtocolConfig};
 
-use ads_bazaar_shared::{CampaignId, CampaignStatus, ApplicationStatus, PayoutAsset};
+use ads_bazaar_shared::{ApplicationStatus, CampaignId, CampaignStatus, PayoutAsset};
 use soroban_sdk::{contract, contractimpl, token, Address, Env, String};
 
 #[contract]
@@ -321,16 +321,9 @@ impl CampaignEscrowContract {
     /// fee configured at `initialize`. Callable by the creator once their
     /// submission is approved, or automatically once the content deadline has
     /// passed (auto-approval).
-    pub fn claim_payment(
-        env: Env,
-        creator: Address,
-        campaign_id: CampaignId,
-    ) -> Result<(), Error> {
+    pub fn claim_payment(env: Env, creator: Address, campaign_id: CampaignId) -> Result<(), Error> {
         creator.require_auth();
         let mut campaign = storage::get_campaign(&env, campaign_id)?;
-        if campaign.status == CampaignStatus::Cancelled {
-            return Err(Error::InvalidStatus);
-        }
 
         let mut application = storage::get_application(&env, campaign_id, &creator)?;
         if application.status != ApplicationStatus::ProofSubmitted {
@@ -378,8 +371,10 @@ impl CampaignEscrowContract {
         Ok(())
     }
 
-    /// Cancel a campaign and refund any remaining escrow balance to the
-    /// business. Allowed at any point before full payout completion.
+    /// Cancel a campaign and refund the unallocated (never-committed) portion
+    /// of the escrow to the business. Allowed at any point before full payout
+    /// completion. Payouts already committed to approved creators remain
+    /// reserved and can still be claimed via `claim_payment` afterward.
     pub fn cancel_campaign(
         env: Env,
         business: Address,
@@ -398,12 +393,19 @@ impl CampaignEscrowContract {
 
         let token = token::Client::new(&env, &campaign.asset.token);
         let contract = env.current_contract_address();
-        let refund = campaign.escrow_balance;
+        // Never refund more than the unallocated balance. `committed_payouts`
+        // is reserved for approved creators who are still owed payment and can
+        // `claim_payment` even after the campaign is cancelled.
+        let refund = campaign
+            .escrow_balance
+            .checked_sub(campaign.committed_payouts)
+            .ok_or(Error::InvalidAmount)?;
         if refund > 0 {
             token.transfer(&contract, &business, &refund);
         }
-        campaign.escrow_balance = 0;
-        campaign.committed_payouts = 0;
+        // Leave `committed_payouts` intact so approved-but-unpaid creators can
+        // still claim their payouts afterward.
+        campaign.escrow_balance = campaign.committed_payouts;
         campaign.status = CampaignStatus::Cancelled;
         storage::set_campaign(&env, &campaign);
         events::CampaignCancelled {
@@ -414,9 +416,10 @@ impl CampaignEscrowContract {
         Ok(())
     }
 
-    /// Expire a campaign past its content deadline, refunding the full
-    /// remaining escrow balance to the business. Fails if called before the
-    /// content deadline is reached.
+    /// Expire a campaign past its content deadline, refunding the unallocated
+    /// (never-committed) portion of the escrow balance to the business. Fails
+    /// if called before the content deadline is reached. Any payout already
+    /// committed to an approved creator remains reserved and claimable.
     pub fn expire_campaign(
         env: Env,
         business: Address,
@@ -438,12 +441,18 @@ impl CampaignEscrowContract {
 
         let token = token::Client::new(&env, &campaign.asset.token);
         let contract = env.current_contract_address();
-        let refund = campaign.escrow_balance;
+        // Only the unallocated balance is refundable; committed payouts stay
+        // reserved for approved creators who can still `claim_payment`.
+        let refund = campaign
+            .escrow_balance
+            .checked_sub(campaign.committed_payouts)
+            .ok_or(Error::InvalidAmount)?;
         if refund > 0 {
             token.transfer(&contract, &business, &refund);
         }
-        campaign.escrow_balance = 0;
-        campaign.committed_payouts = 0;
+        // Leave `committed_payouts` intact so approved-but-unpaid creators can
+        // still claim their payouts afterward.
+        campaign.escrow_balance = campaign.committed_payouts;
         campaign.status = CampaignStatus::Cancelled;
         storage::set_campaign(&env, &campaign);
         events::CampaignCancelled {
@@ -454,9 +463,10 @@ impl CampaignEscrowContract {
         Ok(())
     }
 
-    /// Reclaim any unallocated (surplus) escrow back to the business after
-    /// payouts have been released. Surplus is whatever escrow remains once
-    /// selected creators have been paid.
+    /// Reclaim any unallocated (surplus) escrow back to the business. Surplus
+    /// is whatever escrow remains once committed payouts are excluded, so it
+    /// can be called while approved creators are still owed payment — those
+    /// reserved payouts remain claimable afterward.
     pub fn reclaim_surplus(
         env: Env,
         business: Address,
@@ -473,12 +483,18 @@ impl CampaignEscrowContract {
 
         let token = token::Client::new(&env, &campaign.asset.token);
         let contract = env.current_contract_address();
-        let surplus = campaign.escrow_balance;
+        // Surplus is the unallocated balance only; committed payouts stay
+        // reserved for approved creators who can still `claim_payment`.
+        let surplus = campaign
+            .escrow_balance
+            .checked_sub(campaign.committed_payouts)
+            .ok_or(Error::InvalidAmount)?;
         if surplus > 0 {
             token.transfer(&contract, &business, &surplus);
         }
-        campaign.escrow_balance = 0;
-        campaign.committed_payouts = 0;
+        // Leave `committed_payouts` intact so approved-but-unpaid creators can
+        // still claim their payouts afterward.
+        campaign.escrow_balance = campaign.committed_payouts;
         if campaign.status != CampaignStatus::Completed {
             campaign.status = CampaignStatus::Completed;
         }
