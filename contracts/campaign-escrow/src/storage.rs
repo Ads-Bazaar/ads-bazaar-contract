@@ -31,6 +31,9 @@ pub enum DataKey {
     NextCampaignId,
     Campaign(CampaignId),
     Application(CampaignId, Address),
+    /// Whether the contract is currently paused. See `require_not_paused`
+    /// and `pause`/`unpause` in `lib.rs`.
+    Paused,
 }
 
 pub fn is_initialized(env: &Env) -> bool {
@@ -151,4 +154,17 @@ pub fn set_application(env: &Env, application: &Application) {
         PERSISTENT_LIFETIME_THRESHOLD,
         PERSISTENT_BUMP_LEDGERS,
     );
+}
+
+/// Read the current pause state. Defaults to `false` (unpaused) if never
+/// explicitly set, which is also the correct behavior pre-`initialize`.
+pub fn get_paused(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::Paused)
+        .unwrap_or(false)
+}
+
+pub fn set_paused(env: &Env, paused: bool) {
+    env.storage().instance().set(&DataKey::Paused, &paused);
 }

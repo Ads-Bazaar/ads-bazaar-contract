@@ -19,4 +19,7 @@ pub enum Error {
     DeadlinePassed = 8,
     MaxCreatorsReached = 9,
     InsufficientEscrowBalance = 10,
+    /// Returned by any guarded state-changing function while the contract
+    /// is paused via `pause`. See `require_not_paused` in `lib.rs`.
+    ContractPaused = 11,
 }

@@ -146,3 +146,93 @@ fn create_campaign_is_not_yet_implemented() {
         &String::from_str(&env, "ipfs://brief"),
     );
 }
+
+#[test]
+fn pause_blocks_apply_to_campaign() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, dispute_contract) = setup(&env);
+    client.initialize(&admin, &dispute_contract, &250);
+    client.pause(&admin);
+    assert!(client.is_paused());
+
+    let creator = Address::generate(&env);
+    let result =
+        client.try_apply_to_campaign(&creator, &0, &String::from_str(&env, "ipfs://pitch"));
+    assert_eq!(result, Err(Ok(Error::ContractPaused)));
+}
+
+#[test]
+#[should_panic(expected = "not yet implemented")]
+fn unpause_allows_call_past_guard() {
+    // Confirms unpause removes the pause guard: the call now reaches the
+    // still-unimplemented body (`todo!()`) instead of being blocked with
+    // `ContractPaused`. Replace with a real assertion once
+    // `apply_to_campaign` is implemented.
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, dispute_contract) = setup(&env);
+    client.initialize(&admin, &dispute_contract, &250);
+    client.pause(&admin);
+    client.unpause(&admin);
+    assert!(!client.is_paused());
+
+    let creator = Address::generate(&env);
+    client.apply_to_campaign(&creator, &0, &String::from_str(&env, "ipfs://pitch"));
+}
+
+#[test]
+fn view_functions_readable_while_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, dispute_contract) = setup(&env);
+    client.initialize(&admin, &dispute_contract, &250);
+    client.pause(&admin);
+
+    let config = client.get_protocol_config();
+    assert_eq!(config.admin, admin);
+
+    let result = client.try_get_campaign(&0);
+    assert_eq!(result, Err(Ok(Error::CampaignNotFound)));
+
+    assert!(client.is_paused());
+}
+
+#[test]
+fn non_admin_cannot_pause() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, dispute_contract) = setup(&env);
+    client.initialize(&admin, &dispute_contract, &250);
+
+    let not_admin = Address::generate(&env);
+    let result = client.try_pause(&not_admin);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn non_admin_cannot_unpause() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, dispute_contract) = setup(&env);
+    client.initialize(&admin, &dispute_contract, &250);
+    client.pause(&admin);
+
+    let not_admin = Address::generate(&env);
+    let result = client.try_unpause(&not_admin);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn pause_unpause_toggles_is_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, dispute_contract) = setup(&env);
+    client.initialize(&admin, &dispute_contract, &250);
+
+    assert!(!client.is_paused());
+    client.pause(&admin);
+    assert!(client.is_paused());
+    client.unpause(&admin);
+    assert!(!client.is_paused());
+}
