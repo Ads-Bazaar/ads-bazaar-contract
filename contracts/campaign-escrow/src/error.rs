@@ -21,4 +21,7 @@ pub enum Error {
     InsufficientEscrowBalance = 10,
     NotCampaignOwner = 11,
     CampaignClosed = 12,
+    /// Returned by any guarded state-changing function while the contract
+    /// is paused via `pause`. See `require_not_paused` in `lib.rs`.
+    ContractPaused = 11,
 }

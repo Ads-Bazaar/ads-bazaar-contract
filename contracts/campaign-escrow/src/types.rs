@@ -41,3 +41,19 @@ pub struct Application {
     pub payout_amount: i128,
     pub status: ApplicationStatus,
 }
+
+/// Snapshot of protocol-level configuration, returned by
+/// `get_protocol_config` so the frontend can compute fee breakdowns before a
+/// business funds a campaign.
+///
+/// `treasury` defaults to `admin` at `initialize` time — there is no
+/// separate fee-collection destination yet (see the TODO on
+/// `release_payment` in `lib.rs`). A future issue can add a
+/// `set_treasury` admin-only setter if/when that needs to diverge.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProtocolConfig {
+    pub admin: Address,
+    pub treasury: Address,
+    pub fee_bps: i128,
+}

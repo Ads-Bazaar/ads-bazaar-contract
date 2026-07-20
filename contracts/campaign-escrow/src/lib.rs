@@ -20,10 +20,38 @@ mod storage;
 mod types;
 
 pub use error::Error;
-pub use types::{Application, Campaign};
+pub use types::{Application, Campaign, ProtocolConfig};
 
 use ads_bazaar_shared::{CampaignId, PayoutAsset};
-use soroban_sdk::{contract, contractimpl, Address, Env, String};
+use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String};
+
+/// Version string stored at `initialize` time. `upgrade` swaps the WASM
+/// binary but does not bump this on its own — see the TODO on `upgrade`
+/// below.
+const INITIAL_VERSION: &str = "0.1.0";
+
+/// Require that `admin` matches the address stored at `initialize` time.
+/// Returns `Error::Unauthorized` for any other caller. Used by `pause` and
+/// `unpause`.
+fn require_admin(env: &Env, admin: &Address) -> Result<(), Error> {
+    admin.require_auth();
+    let stored_admin = storage::get_admin(env)?;
+    if stored_admin != *admin {
+        return Err(Error::Unauthorized);
+    }
+    Ok(())
+}
+
+/// Guard called at the top of every state-changing function. Returns
+/// `Error::ContractPaused` if the contract is currently paused via `pause`.
+/// Read-only functions intentionally do not call this, so users can still
+/// read their data while the contract is paused.
+fn require_not_paused(env: &Env) -> Result<(), Error> {
+    if storage::get_paused(env) {
+        return Err(Error::ContractPaused);
+    }
+    Ok(())
+}
 
 #[contract]
 pub struct CampaignEscrowContract;
@@ -51,9 +79,39 @@ impl CampaignEscrowContract {
         admin.require_auth();
 
         storage::set_admin(&env, &admin);
+        // No separate fee-collection destination exists yet (see the TODO
+        // on `release_payment` below) — treasury defaults to admin until a
+        // future issue adds a dedicated setter.
+        storage::set_treasury(&env, &admin);
         storage::set_dispute_contract(&env, &dispute_contract);
         storage::set_fee_bps(&env, fee_bps);
+        storage::set_version(&env, &String::from_str(&env, INITIAL_VERSION));
         Ok(())
+    }
+
+    /// Freeze all state-changing operations. Callable only by the admin set
+    /// at `initialize`. Emits `events::ContractPaused`. View functions are
+    /// unaffected and remain readable.
+    pub fn pause(env: Env, admin: Address) -> Result<(), Error> {
+        require_admin(&env, &admin)?;
+        storage::set_paused(&env, true);
+        events::ContractPaused { admin }.publish(&env);
+        Ok(())
+    }
+
+    /// Resume state-changing operations after a `pause`. Callable only by
+    /// the admin set at `initialize`. Emits `events::ContractUnpaused`.
+    pub fn unpause(env: Env, admin: Address) -> Result<(), Error> {
+        require_admin(&env, &admin)?;
+        storage::set_paused(&env, false);
+        events::ContractUnpaused { admin }.publish(&env);
+        Ok(())
+    }
+
+    /// Read-only: current pause state. Accessible regardless of whether the
+    /// contract is paused.
+    pub fn is_paused(env: Env) -> bool {
+        storage::get_paused(&env)
     }
 
     /// Create a new draft campaign owned by `business`. Not yet escrowed —
@@ -78,6 +136,7 @@ impl CampaignEscrowContract {
         completion_deadline: u64,
         metadata_uri: String,
     ) -> Result<CampaignId, Error> {
+        require_not_paused(&env)?;
         todo!("design + implement campaign creation — see doc comment above")
     }
 
@@ -95,6 +154,7 @@ impl CampaignEscrowContract {
         business: Address,
         campaign_id: CampaignId,
     ) -> Result<(), Error> {
+        require_not_paused(&env)?;
         business.require_auth();
         todo!("design + implement escrow funding — see doc comment above")
     }
@@ -111,6 +171,7 @@ impl CampaignEscrowContract {
         campaign_id: CampaignId,
         pitch_uri: String,
     ) -> Result<(), Error> {
+        require_not_paused(&env)?;
         creator.require_auth();
         todo!("design + implement creator applications — see doc comment above")
     }
@@ -129,6 +190,7 @@ impl CampaignEscrowContract {
         creator: Address,
         payout_amount: i128,
     ) -> Result<(), Error> {
+        require_not_paused(&env)?;
         business.require_auth();
         todo!("design + implement creator approval — see doc comment above")
     }
@@ -146,6 +208,7 @@ impl CampaignEscrowContract {
         campaign_id: CampaignId,
         proof_uri: String,
     ) -> Result<(), Error> {
+        require_not_paused(&env)?;
         creator.require_auth();
         todo!("design + implement proof submission/verification — see doc comment above")
     }
@@ -164,6 +227,7 @@ impl CampaignEscrowContract {
         campaign_id: CampaignId,
         creator: Address,
     ) -> Result<(), Error> {
+        require_not_paused(&env)?;
         business.require_auth();
         todo!("design + implement payout release — see doc comment above")
     }
@@ -179,6 +243,7 @@ impl CampaignEscrowContract {
         business: Address,
         campaign_id: CampaignId,
     ) -> Result<(), Error> {
+        require_not_paused(&env)?;
         business.require_auth();
 
         let mut campaign = storage::get_campaign(&env, campaign_id)?;
@@ -229,6 +294,7 @@ impl CampaignEscrowContract {
         campaign_id: CampaignId,
         creator: Address,
     ) -> Result<(), Error> {
+        require_not_paused(&env)?;
         todo!("design + implement dispute freeze hook — see doc comment above")
     }
 
@@ -243,6 +309,7 @@ impl CampaignEscrowContract {
         creator: Address,
         creator_bps: i128,
     ) -> Result<(), Error> {
+        require_not_paused(&env)?;
         todo!("design + implement dispute payout resolution — see doc comment above")
     }
 
@@ -258,6 +325,49 @@ impl CampaignEscrowContract {
         creator: Address,
     ) -> Result<Application, Error> {
         storage::get_application(&env, campaign_id, &creator)
+    }
+
+    /// Read-only lookup of protocol-level config (admin, treasury, fee_bps)
+    /// so the frontend can compute a fee breakdown before funding a
+    /// campaign. Requires no auth. Errors with `Error::NotInitialized` if
+    /// called before `initialize`.
+    pub fn get_protocol_config(env: Env) -> Result<ProtocolConfig, Error> {
+        let admin = storage::get_admin(&env)?;
+        let treasury = storage::get_treasury(&env)?;
+        let fee_bps = storage::get_fee_bps(&env)?;
+
+        storage::extend_instance_ttl(&env);
+
+        Ok(ProtocolConfig {
+            admin,
+            treasury,
+            fee_bps,
+        })
+    }
+
+    /// Read-only lookup of the WASM version string set at `initialize`.
+    pub fn version(env: Env) -> Result<String, Error> {
+        storage::get_version(&env)
+    }
+
+    /// Replace this contract's WASM binary in place via Soroban's native
+    /// upgrade mechanism, preserving the contract address and all existing
+    /// storage. Admin-only.
+    ///
+    /// TODO(contributors): this does not bump the stored `Version` — decide
+    /// whether `upgrade` should take a new version string to persist, or
+    /// whether version tracking should be derived from the wasm hash instead.
+    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env)?;
+        if admin != stored_admin {
+            return Err(Error::Unauthorized);
+        }
+
+        env.deployer()
+            .update_current_contract_wasm(new_wasm_hash.clone());
+        events::ContractUpgraded { new_wasm_hash }.publish(&env);
+        Ok(())
     }
 }
 
