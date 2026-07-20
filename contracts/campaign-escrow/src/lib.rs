@@ -28,6 +28,29 @@ use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String};
 /// below.
 const INITIAL_VERSION: &str = "0.1.0";
 
+/// Require that `admin` matches the address stored at `initialize` time.
+/// Returns `Error::Unauthorized` for any other caller. Used by `pause` and
+/// `unpause`.
+fn require_admin(env: &Env, admin: &Address) -> Result<(), Error> {
+    admin.require_auth();
+    let stored_admin = storage::get_admin(env)?;
+    if stored_admin != *admin {
+        return Err(Error::Unauthorized);
+    }
+    Ok(())
+}
+
+/// Guard called at the top of every state-changing function. Returns
+/// `Error::ContractPaused` if the contract is currently paused via `pause`.
+/// Read-only functions intentionally do not call this, so users can still
+/// read their data while the contract is paused.
+fn require_not_paused(env: &Env) -> Result<(), Error> {
+    if storage::get_paused(env) {
+        return Err(Error::ContractPaused);
+    }
+    Ok(())
+}
+
 #[contract]
 pub struct CampaignEscrowContract;
 
@@ -62,6 +85,31 @@ impl CampaignEscrowContract {
         storage::set_fee_bps(&env, fee_bps);
         storage::set_version(&env, &String::from_str(&env, INITIAL_VERSION));
         Ok(())
+    }
+
+    /// Freeze all state-changing operations. Callable only by the admin set
+    /// at `initialize`. Emits `events::ContractPaused`. View functions are
+    /// unaffected and remain readable.
+    pub fn pause(env: Env, admin: Address) -> Result<(), Error> {
+        require_admin(&env, &admin)?;
+        storage::set_paused(&env, true);
+        events::ContractPaused { admin }.publish(&env);
+        Ok(())
+    }
+
+    /// Resume state-changing operations after a `pause`. Callable only by
+    /// the admin set at `initialize`. Emits `events::ContractUnpaused`.
+    pub fn unpause(env: Env, admin: Address) -> Result<(), Error> {
+        require_admin(&env, &admin)?;
+        storage::set_paused(&env, false);
+        events::ContractUnpaused { admin }.publish(&env);
+        Ok(())
+    }
+
+    /// Read-only: current pause state. Accessible regardless of whether the
+    /// contract is paused.
+    pub fn is_paused(env: Env) -> bool {
+        storage::get_paused(&env)
     }
 
     /// Create a new draft campaign owned by `business`. Not yet escrowed —
@@ -118,6 +166,8 @@ impl CampaignEscrowContract {
         }
         .publish(&env);
         Ok(id)
+        require_not_paused(&env)?;
+        todo!("design + implement campaign creation — see doc comment above")
     }
 
     /// Transfer `campaign.total_budget` of `campaign.asset.token` from
@@ -128,6 +178,7 @@ impl CampaignEscrowContract {
         business: Address,
         campaign_id: CampaignId,
     ) -> Result<(), Error> {
+        require_not_paused(&env)?;
         business.require_auth();
         let mut campaign = storage::get_campaign(&env, campaign_id)?;
         if campaign.status != CampaignStatus::Draft {
@@ -162,6 +213,7 @@ impl CampaignEscrowContract {
         campaign_id: CampaignId,
         pitch_uri: String,
     ) -> Result<(), Error> {
+        require_not_paused(&env)?;
         creator.require_auth();
         let campaign = storage::get_campaign(&env, campaign_id)?;
         if campaign.status != CampaignStatus::Funded && campaign.status != CampaignStatus::Active {
@@ -202,6 +254,7 @@ impl CampaignEscrowContract {
         creator: Address,
         payout_amount: i128,
     ) -> Result<(), Error> {
+        require_not_paused(&env)?;
         business.require_auth();
         let mut campaign = storage::get_campaign(&env, campaign_id)?;
         if campaign.business != business {
@@ -253,6 +306,7 @@ impl CampaignEscrowContract {
         campaign_id: CampaignId,
         proof_uri: String,
     ) -> Result<(), Error> {
+        require_not_paused(&env)?;
         creator.require_auth();
         let campaign = storage::get_campaign(&env, campaign_id)?;
         if env.ledger().timestamp() > campaign.completion_deadline {
@@ -283,6 +337,7 @@ impl CampaignEscrowContract {
         campaign_id: CampaignId,
         creator: Address,
     ) -> Result<(), Error> {
+        require_not_paused(&env)?;
         business.require_auth();
         let campaign = storage::get_campaign(&env, campaign_id)?;
         if campaign.business != business {
@@ -381,11 +436,18 @@ impl CampaignEscrowContract {
     /// of the escrow to the business. Allowed at any point before full payout
     /// completion. Payouts already committed to approved creators remain
     /// reserved and can still be claimed via `claim_payment` afterward.
+    /// Cancel a campaign and refund any remaining escrow balance to the
+    /// business.
+    ///
+    /// TODO(contributors): implement. Decide whether cancellation is allowed
+    /// once creators are already approved/active, and if so how their
+    /// pending payouts are handled.
     pub fn cancel_campaign(
         env: Env,
         business: Address,
         campaign_id: CampaignId,
     ) -> Result<(), Error> {
+        require_not_paused(&env)?;
         business.require_auth();
         let mut campaign = storage::get_campaign(&env, campaign_id)?;
         if campaign.business != business {
@@ -432,6 +494,7 @@ impl CampaignEscrowContract {
         campaign_id: CampaignId,
     ) -> Result<(), Error> {
         business.require_auth();
+
         let mut campaign = storage::get_campaign(&env, campaign_id)?;
         if campaign.business != business {
             return Err(Error::NotCampaignOwner);
@@ -510,6 +573,32 @@ impl CampaignEscrowContract {
             refunded_amount: surplus,
         }
         .publish(&env);
+        if campaign.status != ads_bazaar_shared::CampaignStatus::Funded
+            && campaign.status != ads_bazaar_shared::CampaignStatus::Draft
+        {
+            return Err(Error::CampaignClosed);
+        }
+
+        let refunded_amount = campaign.escrow_balance;
+
+        campaign.status = ads_bazaar_shared::CampaignStatus::Cancelled;
+        campaign.escrow_balance = 0;
+        storage::set_campaign(&env, &campaign);
+
+        if refunded_amount > 0 {
+            soroban_sdk::token::Client::new(&env, &campaign.asset.token).transfer(
+                &env.current_contract_address(),
+                &business,
+                &refunded_amount,
+            );
+        }
+
+        events::CampaignCancelled {
+            campaign_id,
+            refunded_amount,
+        }
+        .publish(&env);
+
         Ok(())
     }
 
@@ -528,6 +617,7 @@ impl CampaignEscrowContract {
         campaign_id: CampaignId,
         creator: Address,
     ) -> Result<(), Error> {
+        require_not_paused(&env)?;
         todo!("design + implement dispute freeze hook — see doc comment above")
     }
 
@@ -542,6 +632,7 @@ impl CampaignEscrowContract {
         creator: Address,
         creator_bps: i128,
     ) -> Result<(), Error> {
+        require_not_paused(&env)?;
         todo!("design + implement dispute payout resolution — see doc comment above")
     }
 

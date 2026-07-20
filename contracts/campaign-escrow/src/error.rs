@@ -35,4 +35,9 @@ pub enum Error {
     DeadlineInPast = 17,
     /// The campaign is not yet past its content deadline.
     DeadlineNotReached = 18,
+    NotCampaignOwner = 11,
+    CampaignClosed = 12,
+    /// Returned by any guarded state-changing function while the contract
+    /// is paused via `pause`. See `require_not_paused` in `lib.rs`.
+    ContractPaused = 11,
 }

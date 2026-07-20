@@ -72,6 +72,23 @@ pub struct CampaignCancelled {
     pub refunded_amount: i128,
 }
 
+/// Emitted by `pause`. Already wired up (unlike most events above, which
+/// are still waiting on their corresponding `todo!()` handlers).
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ContractPaused {
+    #[topic]
+    pub admin: Address,
+}
+
+/// Emitted by `unpause`.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ContractUnpaused {
+    #[topic]
+    pub admin: Address,
+}
+
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct ContractUpgraded {
