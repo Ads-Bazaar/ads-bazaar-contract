@@ -344,6 +344,10 @@ mod test_happy_path {
         );
         // Business rejects the proof.
         client.reject_submission(&business, &id, &creator);
+
+        // Verify it was marked as Rejected
+        let app = client.get_application(&id, &creator);
+        assert_eq!(app.status, ads_bazaar_shared::ApplicationStatus::Rejected);
         // Creator resubmits.
         client.submit_proof(
             &creator,

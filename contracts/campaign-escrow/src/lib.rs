@@ -339,7 +339,9 @@ impl CampaignEscrowContract {
         }
 
         let mut application = storage::get_application(&env, campaign_id, &creator)?;
-        if application.status != ApplicationStatus::Approved {
+        if application.status != ApplicationStatus::Approved
+            && application.status != ApplicationStatus::Rejected
+        {
             return Err(Error::InvalidStatus);
         }
 
@@ -399,8 +401,13 @@ impl CampaignEscrowContract {
         }
         application.proof_uri = None;
         application.proof_approved = false;
-        application.status = ApplicationStatus::Approved;
+        application.status = ApplicationStatus::Rejected;
         storage::set_application(&env, &application);
+        events::SubmissionRejected {
+            campaign_id,
+            creator,
+        }
+        .publish(&env);
         Ok(())
     }
 
