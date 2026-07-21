@@ -20,8 +20,8 @@ mod types;
 pub use error::Error;
 pub use types::{Application, Campaign, ProtocolConfig};
 
-use ads_bazaar_shared::{CampaignId, PayoutAsset};
-use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String};
+use ads_bazaar_shared::{ApplicationStatus, CampaignId, CampaignStatus, PayoutAsset};
+use soroban_sdk::{contract, contractimpl, token, Address, BytesN, Env, String};
 
 /// Version string stored at `initialize` time. `upgrade` swaps the WASM
 /// binary but does not bump this on its own — see the TODO on `upgrade`
@@ -112,6 +112,57 @@ impl CampaignEscrowContract {
         storage::get_paused(&env)
     }
 
+    /// Propose a new admin address. The transfer is not finalized until the
+    /// proposed address calls `accept_admin`, proving control of that key.
+    pub fn propose_admin(
+        env: Env,
+        current_admin: Address,
+        new_admin: Address,
+    ) -> Result<(), Error> {
+        require_admin(&env, &current_admin)?;
+        storage::set_pending_admin(&env, &new_admin);
+        storage::extend_instance_ttl(&env);
+        events::AdminProposed {
+            current_admin,
+            new_admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Accept a pending admin transfer. Only the exact proposed address may
+    /// finalize the handover.
+    pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        new_admin.require_auth();
+        let pending_admin = storage::get_pending_admin(&env).ok_or(Error::Unauthorized)?;
+        if pending_admin != new_admin {
+            return Err(Error::Unauthorized);
+        }
+
+        let previous_admin = storage::get_admin(&env)?;
+        storage::set_admin(&env, &new_admin);
+        storage::clear_pending_admin(&env);
+        storage::extend_instance_ttl(&env);
+        events::AdminTransferred {
+            previous_admin,
+            new_admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Update the platform fee charged on creator payouts. Admin-only.
+    pub fn update_fee_bps(env: Env, admin: Address, fee_bps: i128) -> Result<(), Error> {
+        require_admin(&env, &admin)?;
+        if !(0..=ads_bazaar_shared::BASIS_POINTS_DENOMINATOR).contains(&fee_bps) {
+            return Err(Error::InvalidAmount);
+        }
+
+        storage::set_fee_bps(&env, fee_bps);
+        storage::extend_instance_ttl(&env);
+        Ok(())
+    }
+
     /// Create a new draft campaign owned by `business`. Not yet escrowed —
     /// call `fund_campaign` afterwards to deposit `total_budget`.
     ///
@@ -166,8 +217,6 @@ impl CampaignEscrowContract {
         }
         .publish(&env);
         Ok(id)
-        require_not_paused(&env)?;
-        todo!("design + implement campaign creation — see doc comment above")
     }
 
     /// Transfer `campaign.total_budget` of `campaign.asset.token` from
@@ -573,32 +622,6 @@ impl CampaignEscrowContract {
             refunded_amount: surplus,
         }
         .publish(&env);
-        if campaign.status != ads_bazaar_shared::CampaignStatus::Funded
-            && campaign.status != ads_bazaar_shared::CampaignStatus::Draft
-        {
-            return Err(Error::CampaignClosed);
-        }
-
-        let refunded_amount = campaign.escrow_balance;
-
-        campaign.status = ads_bazaar_shared::CampaignStatus::Cancelled;
-        campaign.escrow_balance = 0;
-        storage::set_campaign(&env, &campaign);
-
-        if refunded_amount > 0 {
-            soroban_sdk::token::Client::new(&env, &campaign.asset.token).transfer(
-                &env.current_contract_address(),
-                &business,
-                &refunded_amount,
-            );
-        }
-
-        events::CampaignCancelled {
-            campaign_id,
-            refunded_amount,
-        }
-        .publish(&env);
-
         Ok(())
     }
 

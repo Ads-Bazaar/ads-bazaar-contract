@@ -8,7 +8,12 @@
 
 use super::*;
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{BytesN, Env};
+use soroban_sdk::Env;
+
+mod test_helpers {
+    use super::*;
+    use soroban_sdk::testutils::Ledger;
+    use soroban_sdk::{token::StellarAssetClient, Address, String};
 
     /// Base ledger timestamp all tests start from (so deadlines are relative
     /// and controllable via `advance_time` / direct assignment).
@@ -486,6 +491,97 @@ mod test_protocol_config {
     }
 }
 
+mod test_admin_transfer {
+    use super::test_helpers::setup_env;
+    use crate::{storage, CampaignEscrowContractClient, Error};
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::Address;
+
+    #[test]
+    fn propose_admin_rejects_non_admin() {
+        let (env, contract_id) = setup_env();
+        let client = CampaignEscrowContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let dispute_contract = Address::generate(&env);
+        let not_admin = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        client.initialize(&admin, &dispute_contract, &250);
+
+        let result = client.try_propose_admin(&not_admin, &new_admin);
+
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    }
+
+    #[test]
+    fn propose_admin_stores_pending_candidate() {
+        let (env, contract_id) = setup_env();
+        let client = CampaignEscrowContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let dispute_contract = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        client.initialize(&admin, &dispute_contract, &250);
+
+        client.propose_admin(&admin, &new_admin);
+
+        let pending_admin = env.as_contract(&client.address, || storage::get_pending_admin(&env));
+        assert_eq!(pending_admin, Some(new_admin));
+    }
+
+    #[test]
+    fn full_two_step_transfer_replaces_admin() {
+        let (env, contract_id) = setup_env();
+        let client = CampaignEscrowContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let dispute_contract = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        client.initialize(&admin, &dispute_contract, &250);
+
+        client.propose_admin(&admin, &new_admin);
+        client.accept_admin(&new_admin);
+
+        let pending_admin = env.as_contract(&client.address, || storage::get_pending_admin(&env));
+        assert_eq!(pending_admin, None);
+        let stored_admin = env.as_contract(&client.address, || storage::get_admin(&env));
+        assert_eq!(stored_admin, Ok(new_admin.clone()));
+
+        let old_admin_result = client.try_update_fee_bps(&admin, &100);
+        assert_eq!(old_admin_result, Err(Ok(Error::Unauthorized)));
+
+        client.update_fee_bps(&new_admin, &100);
+        assert_eq!(client.get_protocol_config().fee_bps, 100);
+    }
+
+    #[test]
+    fn accept_admin_rejects_wrong_address() {
+        let (env, contract_id) = setup_env();
+        let client = CampaignEscrowContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let dispute_contract = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        let wrong_admin = Address::generate(&env);
+        client.initialize(&admin, &dispute_contract, &250);
+
+        client.propose_admin(&admin, &new_admin);
+        let result = client.try_accept_admin(&wrong_admin);
+
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    }
+
+    #[test]
+    fn accept_admin_before_propose_is_unauthorized() {
+        let (env, contract_id) = setup_env();
+        let client = CampaignEscrowContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let dispute_contract = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        client.initialize(&admin, &dispute_contract, &250);
+
+        let result = client.try_accept_admin(&new_admin);
+
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    }
+}
+
 mod test_auth_failures {
     use super::test_helpers::*;
     use crate::Error;
@@ -573,223 +669,118 @@ mod test_auth_failures {
     }
 }
 
-#[test]
-fn version_returns_initial_version_after_initialize() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, dispute_contract) = setup(&env);
-    client.initialize(&admin, &dispute_contract, &250);
+mod test_admin_basics {
+    use super::test_helpers::setup_env;
+    use crate::{CampaignEscrowContractClient, Error};
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{Address, BytesN, String};
 
-    assert_eq!(client.version(), String::from_str(&env, "0.1.0"));
-}
+    #[test]
+    fn version_returns_initial_version_after_initialize() {
+        let (env, contract_id) = setup_env();
+        let client = CampaignEscrowContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let dispute_contract = Address::generate(&env);
+        client.initialize(&admin, &dispute_contract, &250);
 
-#[test]
-fn version_fails_before_initialization() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, _admin, _dispute_contract) = setup(&env);
+        assert_eq!(client.version(), String::from_str(&env, "0.1.0"));
+    }
 
-    let result = client.try_version();
-    assert_eq!(result, Err(Ok(Error::NotInitialized)));
-}
+    #[test]
+    fn version_fails_before_initialization() {
+        let (env, contract_id) = setup_env();
+        let client = CampaignEscrowContractClient::new(&env, &contract_id);
 
-#[test]
-fn upgrade_rejects_non_admin() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, dispute_contract) = setup(&env);
-    client.initialize(&admin, &dispute_contract, &250);
+        let result = client.try_version();
+        assert_eq!(result, Err(Ok(Error::NotInitialized)));
+    }
 
-    let not_admin = Address::generate(&env);
-    let new_wasm_hash = BytesN::from_array(&env, &[7u8; 32]);
-    let result = client.try_upgrade(&not_admin, &new_wasm_hash);
-    assert_eq!(result, Err(Ok(Error::Unauthorized)));
-}
+    #[test]
+    fn upgrade_rejects_non_admin() {
+        let (env, contract_id) = setup_env();
+        let client = CampaignEscrowContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let dispute_contract = Address::generate(&env);
+        client.initialize(&admin, &dispute_contract, &250);
 
-#[test]
-#[should_panic(expected = "not yet implemented")]
-fn create_campaign_is_not_yet_implemented() {
-    // Documents current scaffold state: this will start failing (in a good
-    // way) once `create_campaign` is implemented — replace this test with a
-    // real assertion at that point.
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, dispute_contract) = setup(&env);
-    client.initialize(&admin, &dispute_contract, &250);
+        let not_admin = Address::generate(&env);
+        let new_wasm_hash = BytesN::from_array(&env, &[7u8; 32]);
+        let result = client.try_upgrade(&not_admin, &new_wasm_hash);
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    }
 
-    let business = Address::generate(&env);
-    let token = Address::generate(&env);
-    let asset = ads_bazaar_shared::PayoutAsset {
-        token,
-        symbol: String::from_str(&env, "USDC"),
-    };
+    #[test]
+    fn pause_blocks_apply_to_campaign() {
+        let (env, contract_id) = setup_env();
+        let client = CampaignEscrowContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let dispute_contract = Address::generate(&env);
+        client.initialize(&admin, &dispute_contract, &250);
+        client.pause(&admin);
+        assert!(client.is_paused());
 
-    client.create_campaign(
-        &business,
-        &asset,
-        &1_000_000,
-        &5,
-        &(env.ledger().timestamp() + 86_400),
-        &(env.ledger().timestamp() + 604_800),
-        &String::from_str(&env, "ipfs://brief"),
-    );
-}
+        let creator = Address::generate(&env);
+        let result =
+            client.try_apply_to_campaign(&creator, &0, &String::from_str(&env, "ipfs://pitch"));
+        assert_eq!(result, Err(Ok(Error::ContractPaused)));
+    }
 
-#[test]
-fn pause_blocks_apply_to_campaign() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, dispute_contract) = setup(&env);
-    client.initialize(&admin, &dispute_contract, &250);
-    client.pause(&admin);
-    assert!(client.is_paused());
+    #[test]
+    fn view_functions_readable_while_paused() {
+        let (env, contract_id) = setup_env();
+        let client = CampaignEscrowContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let dispute_contract = Address::generate(&env);
+        client.initialize(&admin, &dispute_contract, &250);
+        client.pause(&admin);
 
-    let creator = Address::generate(&env);
-    let result =
-        client.try_apply_to_campaign(&creator, &0, &String::from_str(&env, "ipfs://pitch"));
-    assert_eq!(result, Err(Ok(Error::ContractPaused)));
-}
+        let config = client.get_protocol_config();
+        assert_eq!(config.admin, admin);
 
-#[test]
-#[should_panic(expected = "not yet implemented")]
-fn unpause_allows_call_past_guard() {
-    // Confirms unpause removes the pause guard: the call now reaches the
-    // still-unimplemented body (`todo!()`) instead of being blocked with
-    // `ContractPaused`. Replace with a real assertion once
-    // `apply_to_campaign` is implemented.
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, dispute_contract) = setup(&env);
-    client.initialize(&admin, &dispute_contract, &250);
+        let result = client.try_get_campaign(&0);
+        assert_eq!(result, Err(Ok(Error::CampaignNotFound)));
+        assert!(client.is_paused());
+    }
 
-    let business = Address::generate(&env);
-    let malicious = Address::generate(&env);
-    let token_addr = Address::generate(&env);
+    #[test]
+    fn non_admin_cannot_pause() {
+        let (env, contract_id) = setup_env();
+        let client = CampaignEscrowContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let dispute_contract = Address::generate(&env);
+        client.initialize(&admin, &dispute_contract, &250);
 
-    let asset = ads_bazaar_shared::PayoutAsset {
-        token: token_addr,
-        symbol: String::from_str(&env, "USDC"),
-    };
+        let not_admin = Address::generate(&env);
+        let result = client.try_pause(&not_admin);
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    }
 
-    let campaign_id = 1;
-    let campaign = Campaign {
-        id: campaign_id,
-        business: business.clone(),
-        asset,
-        total_budget: 1_000_000,
-        escrow_balance: 1_000_000,
-        max_creators: 5,
-        approved_count: 0,
-        application_deadline: env.ledger().timestamp() + 86_400,
-        completion_deadline: env.ledger().timestamp() + 604_800,
-        metadata_uri: String::from_str(&env, "ipfs://brief"),
-        status: ads_bazaar_shared::CampaignStatus::Funded,
-    };
+    #[test]
+    fn non_admin_cannot_unpause() {
+        let (env, contract_id) = setup_env();
+        let client = CampaignEscrowContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let dispute_contract = Address::generate(&env);
+        client.initialize(&admin, &dispute_contract, &250);
+        client.pause(&admin);
 
-    env.as_contract(&client.address, || {
-        storage::set_campaign(&env, &campaign);
-    });
+        let not_admin = Address::generate(&env);
+        let result = client.try_unpause(&not_admin);
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    }
 
-    let res = client.try_cancel_campaign(&malicious, &campaign_id);
-    assert_eq!(res, Err(Ok(Error::NotCampaignOwner)));
-}
+    #[test]
+    fn pause_unpause_toggles_is_paused() {
+        let (env, contract_id) = setup_env();
+        let client = CampaignEscrowContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let dispute_contract = Address::generate(&env);
+        client.initialize(&admin, &dispute_contract, &250);
 
-#[test]
-fn test_cancel_draft_campaign_success() {
-    client.pause(&admin);
-    client.unpause(&admin);
-    assert!(!client.is_paused());
-
-    let creator = Address::generate(&env);
-    client.apply_to_campaign(&creator, &0, &String::from_str(&env, "ipfs://pitch"));
-}
-
-#[test]
-fn view_functions_readable_while_paused() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, dispute_contract) = setup(&env);
-    client.initialize(&admin, &dispute_contract, &250);
-    client.pause(&admin);
-
-    let config = client.get_protocol_config();
-    assert_eq!(config.admin, admin);
-
-    let result = client.try_get_campaign(&0);
-    assert_eq!(result, Err(Ok(Error::CampaignNotFound)));
-
-    assert!(client.is_paused());
-}
-
-#[test]
-fn non_admin_cannot_pause() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, dispute_contract) = setup(&env);
-    client.initialize(&admin, &dispute_contract, &250);
-
-    let business = Address::generate(&env);
-    let token_addr = Address::generate(&env);
-    let asset = ads_bazaar_shared::PayoutAsset {
-        token: token_addr,
-        symbol: String::from_str(&env, "USDC"),
-    };
-
-    let campaign_id = 1;
-    let campaign = Campaign {
-        id: campaign_id,
-        business: business.clone(),
-        asset,
-        total_budget: 1_000_000,
-        escrow_balance: 0,
-        max_creators: 5,
-        approved_count: 0,
-        application_deadline: env.ledger().timestamp() + 86_400,
-        completion_deadline: env.ledger().timestamp() + 604_800,
-        metadata_uri: String::from_str(&env, "ipfs://brief"),
-        status: ads_bazaar_shared::CampaignStatus::Draft,
-    };
-
-    env.as_contract(&client.address, || {
-        storage::set_campaign(&env, &campaign);
-    });
-
-    client.cancel_campaign(&business, &campaign_id);
-
-    let updated_campaign = client.get_campaign(&campaign_id);
-    assert_eq!(
-        updated_campaign.status,
-        ads_bazaar_shared::CampaignStatus::Cancelled
-    );
-    assert_eq!(updated_campaign.escrow_balance, 0);
-    let not_admin = Address::generate(&env);
-    let result = client.try_pause(&not_admin);
-    assert_eq!(result, Err(Ok(Error::Unauthorized)));
-}
-
-#[test]
-fn non_admin_cannot_unpause() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, dispute_contract) = setup(&env);
-    client.initialize(&admin, &dispute_contract, &250);
-    client.pause(&admin);
-
-    let not_admin = Address::generate(&env);
-    let result = client.try_unpause(&not_admin);
-    assert_eq!(result, Err(Ok(Error::Unauthorized)));
-}
-
-#[test]
-fn pause_unpause_toggles_is_paused() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, dispute_contract) = setup(&env);
-    client.initialize(&admin, &dispute_contract, &250);
-
-    assert!(!client.is_paused());
-    client.pause(&admin);
-    assert!(client.is_paused());
-    client.unpause(&admin);
-    assert!(!client.is_paused());
+        assert!(!client.is_paused());
+        client.pause(&admin);
+        assert!(client.is_paused());
+        client.unpause(&admin);
+        assert!(!client.is_paused());
+    }
 }

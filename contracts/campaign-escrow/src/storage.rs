@@ -24,6 +24,7 @@ const INSTANCE_LIFETIME_THRESHOLD: u32 = 500_000;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
     Admin,
+    PendingAdmin,
     Treasury,
     FeeBps,
     DisputeContract,
@@ -58,6 +59,20 @@ pub fn get_admin(env: &Env) -> Result<Address, Error> {
         .instance()
         .get(&DataKey::Admin)
         .ok_or(Error::NotInitialized)
+}
+
+pub fn set_pending_admin(env: &Env, pending_admin: &Address) {
+    env.storage()
+        .instance()
+        .set(&DataKey::PendingAdmin, pending_admin);
+}
+
+pub fn get_pending_admin(env: &Env) -> Option<Address> {
+    env.storage().instance().get(&DataKey::PendingAdmin)
+}
+
+pub fn clear_pending_admin(env: &Env) {
+    env.storage().instance().remove(&DataKey::PendingAdmin);
 }
 
 pub fn set_treasury(env: &Env, treasury: &Address) {

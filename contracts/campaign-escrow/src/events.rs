@@ -91,6 +91,24 @@ pub struct ContractUnpaused {
 
 #[contractevent]
 #[derive(Clone, Debug)]
+pub struct AdminProposed {
+    #[topic]
+    pub current_admin: Address,
+    #[topic]
+    pub new_admin: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AdminTransferred {
+    #[topic]
+    pub previous_admin: Address,
+    #[topic]
+    pub new_admin: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
 pub struct ContractUpgraded {
     pub new_wasm_hash: BytesN<32>,
 }
