@@ -819,3 +819,73 @@ mod test_pause {
         assert!(client.is_paused());
     }
 }
+
+mod admin_updates {
+    use super::test_helpers::*;
+    use crate::{CampaignEscrowContractClient, Error};
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::token::Client as TokenClient;
+    use soroban_sdk::{Address, Env};
+
+    #[test]
+    fn update_fee_and_treasury() {
+        let (env, contract_id) = setup_env();
+        let (client, admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+        let token_client = TokenClient::new(&env, &token);
+
+        let creator = Address::generate(&env);
+        let gross: i128 = 1_000_000;
+        let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
+
+        // Update fee from 50 to 200 bps
+        client.update_fee_bps(&admin, &200);
+
+        // Update treasury
+        let new_treasury = Address::generate(&env);
+        client.update_treasury(&admin, &new_treasury);
+
+        // Verify config updated
+        let config = client.get_protocol_config();
+        assert_eq!(config.fee_bps, 200);
+        assert_eq!(config.treasury, new_treasury);
+
+        // Run through to claim
+        client.apply_to_campaign(&creator, &id, &soroban_sdk::String::from_str(&env, "pitch"));
+        client.approve_creator(&business, &id, &creator, &gross);
+        client.submit_proof(&creator, &id, &soroban_sdk::String::from_str(&env, "proof"));
+        client.approve_submission(&business, &id, &creator);
+
+        let creator_before = token_client.balance(&creator);
+        let treasury_before = token_client.balance(&new_treasury);
+
+        client.claim_payment(&creator, &id);
+
+        let creator_after = token_client.balance(&creator);
+        let treasury_after = token_client.balance(&new_treasury);
+
+        let expected_fee = (gross * 200) / 10_000;
+        let expected_net = gross - expected_fee;
+
+        assert_eq!(treasury_after - treasury_before, expected_fee);
+        assert_eq!(creator_after - creator_before, expected_net);
+    }
+
+    #[test]
+    fn update_fee_unauthorized() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, _business, _token) = bootstrap(&env, &contract_id, 50);
+        let unauthorized = Address::generate(&env);
+
+        let result = client.try_update_fee_bps(&unauthorized, &200);
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    }
+
+    #[test]
+    fn update_fee_too_high() {
+        let (env, contract_id) = setup_env();
+        let (client, admin, _dispute, _business, _token) = bootstrap(&env, &contract_id, 50);
+
+        let result = client.try_update_fee_bps(&admin, &1_001);
+        assert_eq!(result, Err(Ok(Error::FeeTooHigh)));
+    }
+}

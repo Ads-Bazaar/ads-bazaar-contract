@@ -112,6 +112,32 @@ impl CampaignEscrowContract {
         storage::get_paused(&env)
     }
 
+    /// Update the platform fee for future `claim_payment` calls.
+    /// The fee is read at claim time, so a fee change affects pending campaigns.
+    /// Callable only by the admin.
+    pub fn update_fee_bps(env: Env, admin: Address, new_fee_bps: u32) -> Result<(), Error> {
+        require_admin(&env, &admin)?;
+        if new_fee_bps > 1_000 {
+            return Err(Error::FeeTooHigh);
+        }
+        storage::set_fee_bps(&env, new_fee_bps as i128);
+        events::FeeUpdated { admin, new_fee_bps }.publish(&env);
+        Ok(())
+    }
+
+    /// Update the treasury address where platform fees are sent.
+    /// Callable only by the admin.
+    pub fn update_treasury(env: Env, admin: Address, new_treasury: Address) -> Result<(), Error> {
+        require_admin(&env, &admin)?;
+        storage::set_treasury(&env, &new_treasury);
+        events::TreasuryUpdated {
+            admin,
+            new_treasury,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
     /// Create a new draft campaign owned by `business`. Not yet escrowed —
     /// call `fund_campaign` afterwards to deposit `total_budget`.
     ///
@@ -411,7 +437,7 @@ impl CampaignEscrowContract {
         let token = token::Client::new(&env, &campaign.asset.token);
         let contract = env.current_contract_address();
         if fee > 0 {
-            token.transfer(&contract, &storage::get_admin(&env)?, &fee);
+            token.transfer(&contract, &storage::get_treasury(&env)?, &fee);
         }
         token.transfer(&contract, &creator, &net);
 

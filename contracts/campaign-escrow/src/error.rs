@@ -36,4 +36,6 @@ pub enum Error {
     ContractPaused = 19,
     /// The application deadline is not before the completion deadline.
     InvalidDeadlineOrder = 20,
+    /// The updated fee is too high (exceeds the 1000 bps maximum).
+    FeeTooHigh = 21,
 }
