@@ -108,7 +108,7 @@ pub struct ContractUpgraded {
 pub struct FeeUpdated {
     #[topic]
     pub admin: Address,
-    pub new_fee_bps: u32,
+    pub new_fee_bps: i128,
 }
 
 #[contractevent]

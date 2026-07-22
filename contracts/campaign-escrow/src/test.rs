@@ -822,10 +822,10 @@ mod test_pause {
 
 mod admin_updates {
     use super::test_helpers::*;
-    use crate::{CampaignEscrowContractClient, Error};
+    use crate::Error;
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::token::Client as TokenClient;
-    use soroban_sdk::{Address, Env};
+    use soroban_sdk::Address;
 
     #[test]
     fn update_fee_and_treasury() {

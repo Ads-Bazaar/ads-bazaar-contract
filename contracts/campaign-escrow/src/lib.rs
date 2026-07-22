@@ -115,12 +115,16 @@ impl CampaignEscrowContract {
     /// Update the platform fee for future `claim_payment` calls.
     /// The fee is read at claim time, so a fee change affects pending campaigns.
     /// Callable only by the admin.
-    pub fn update_fee_bps(env: Env, admin: Address, new_fee_bps: u32) -> Result<(), Error> {
+    ///
+    /// Capped at 1,000 bps (10%), deliberately tighter than the 0..=10,000
+    /// range `initialize` allows — a sane ceiling for adjusting an already-
+    /// live fee, even though the wider range remains available at deploy time.
+    pub fn update_fee_bps(env: Env, admin: Address, new_fee_bps: i128) -> Result<(), Error> {
         require_admin(&env, &admin)?;
-        if new_fee_bps > 1_000 {
+        if !(0..=1_000).contains(&new_fee_bps) {
             return Err(Error::FeeTooHigh);
         }
-        storage::set_fee_bps(&env, new_fee_bps as i128);
+        storage::set_fee_bps(&env, new_fee_bps);
         events::FeeUpdated { admin, new_fee_bps }.publish(&env);
         Ok(())
     }
