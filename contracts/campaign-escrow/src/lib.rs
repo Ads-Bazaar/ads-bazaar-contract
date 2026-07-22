@@ -115,12 +115,16 @@ impl CampaignEscrowContract {
     /// Update the platform fee for future `claim_payment` calls.
     /// The fee is read at claim time, so a fee change affects pending campaigns.
     /// Callable only by the admin.
-    pub fn update_fee_bps(env: Env, admin: Address, new_fee_bps: u32) -> Result<(), Error> {
+    ///
+    /// Capped at 1,000 bps (10%), deliberately tighter than the 0..=10,000
+    /// range `initialize` allows — a sane ceiling for adjusting an already-
+    /// live fee, even though the wider range remains available at deploy time.
+    pub fn update_fee_bps(env: Env, admin: Address, new_fee_bps: i128) -> Result<(), Error> {
         require_admin(&env, &admin)?;
-        if new_fee_bps > 1_000 {
+        if !(0..=1_000).contains(&new_fee_bps) {
             return Err(Error::FeeTooHigh);
         }
-        storage::set_fee_bps(&env, new_fee_bps as i128);
+        storage::set_fee_bps(&env, new_fee_bps);
         events::FeeUpdated { admin, new_fee_bps }.publish(&env);
         Ok(())
     }
@@ -179,6 +183,9 @@ impl CampaignEscrowContract {
             total_budget,
             escrow_balance: 0,
             committed_payouts: 0,
+            // Snapshotted at creation so a later admin fee change (see
+            // `update_fee_bps`) doesn't retroactively affect this campaign.
+            fee_bps: storage::get_fee_bps(&env)?,
             max_creators,
             approved_count: 0,
             application_deadline,
@@ -430,7 +437,10 @@ impl CampaignEscrowContract {
             return Err(Error::SubmissionNotPayable);
         }
 
-        let fee_bps = storage::get_fee_bps(&env)?;
+        // Use the fee snapshotted at campaign creation, not the current
+        // instance value — an admin fee change (`update_fee_bps`) must not
+        // retroactively affect a campaign's already-agreed payouts.
+        let fee_bps = campaign.fee_bps;
         let fee = application
             .payout_amount
             .checked_mul(fee_bps)
@@ -597,9 +607,9 @@ impl CampaignEscrowContract {
             campaign.status = CampaignStatus::Completed;
         }
         storage::set_campaign(&env, &campaign);
-        events::CampaignCancelled {
+        events::SurplusReclaimed {
             campaign_id,
-            refunded_amount: surplus,
+            amount: surplus,
         }
         .publish(&env);
         Ok(())
