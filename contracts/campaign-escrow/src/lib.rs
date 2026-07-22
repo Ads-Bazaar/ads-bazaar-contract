@@ -125,7 +125,11 @@ impl CampaignEscrowContract {
             return Err(Error::FeeTooHigh);
         }
         storage::set_fee_bps(&env, new_fee_bps);
-        events::FeeUpdated { admin, new_fee_bps: new_fee_bps as u32 }.publish(&env);
+        events::FeeUpdated {
+            admin,
+            new_fee_bps: new_fee_bps as u32,
+        }
+        .publish(&env);
         Ok(())
     }
 
