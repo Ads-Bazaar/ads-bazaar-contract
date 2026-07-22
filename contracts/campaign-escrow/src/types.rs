@@ -8,9 +8,7 @@ use soroban_sdk::{contracttype, Address, String};
 /// still held by the contract, independent of what was originally deposited.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Platform fee in basis points, snapshotted at campaign creation.
-    pub fee_bps: i128,
-    pub struct Campaign {
+pub struct Campaign {
     /// Platform fee in basis points, snapshotted at campaign creation so admin changes don't affect live campaigns.
     pub fee_bps: i128,
     pub id: CampaignId,
