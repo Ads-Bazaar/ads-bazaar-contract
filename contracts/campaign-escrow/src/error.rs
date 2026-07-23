@@ -43,4 +43,6 @@ pub enum Error {
     ApplicationsExist = 22,
     /// The metadata string must be non-empty.
     InvalidMetadata = 23,
+    /// `max_creators` was set to zero when creating a campaign.
+    InvalidCreatorCount = 24,
 }

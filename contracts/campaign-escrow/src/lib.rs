@@ -72,7 +72,7 @@ impl CampaignEscrowContract {
             return Err(Error::AlreadyInitialized);
         }
         if !(0..=ads_bazaar_shared::BASIS_POINTS_DENOMINATOR).contains(&fee_bps) {
-            return Err(Error::InvalidAmount);
+            return Err(Error::FeeTooHigh);
         }
         admin.require_auth();
 
@@ -162,8 +162,11 @@ impl CampaignEscrowContract {
         if !storage::is_initialized(&env) {
             return Err(Error::NotInitialized);
         }
-        if total_budget <= 0 || max_creators == 0 {
+        if total_budget <= 0 {
             return Err(Error::InvalidAmount);
+        }
+        if max_creators == 0 {
+            return Err(Error::InvalidCreatorCount);
         }
         let now = env.ledger().timestamp();
         if application_deadline <= now || completion_deadline <= now {

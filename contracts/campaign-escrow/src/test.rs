@@ -143,7 +143,7 @@ mod test_initialize {
             &dispute,
             &(ads_bazaar_shared::BASIS_POINTS_DENOMINATOR + 1),
         );
-        assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+        assert_eq!(result, Err(Ok(Error::FeeTooHigh)));
     }
 
     #[test]
@@ -703,6 +703,163 @@ mod test_deadline_enforcement {
         // Still before the content deadline.
         let result = client.try_expire_campaign(&business, &id);
         assert_eq!(result, Err(Ok(Error::DeadlineNotReached)));
+    }
+}
+
+mod test_error_variants {
+    use super::test_helpers::*;
+    use crate::{CampaignEscrowContractClient, Error};
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{Address, Env, String};
+
+    #[test]
+    fn invalid_creator_count() {
+        let (env, _contract_id) = setup_env();
+        let (client, _admin, _dispute, _business, _token) = bootstrap(&env, &_contract_id, 50);
+
+        let business = Address::generate(&env);
+        let token = setup_token(&env, &business, 1_000_000);
+        let asset = usdc(&env, &token);
+
+        let now = env.ledger().timestamp();
+        let result = client.try_create_campaign(
+            &business,
+            &asset,
+            &1_000_000,
+            &0,
+            &(now + 86_400),
+            &(now + 604_800),
+            &String::from_str(&env, "ipfs://brief"),
+        );
+        assert_eq!(result, Err(Ok(Error::InvalidCreatorCount)));
+    }
+
+    #[test]
+    fn selection_limit_reached() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 0);
+        let id = create_funded_campaign(&env, &client, &business, &token, 2_000_000, 1);
+
+        let c1 = Address::generate(&env);
+        let c2 = Address::generate(&env);
+        client.apply_to_campaign(&c1, &id, &String::from_str(&env, "pitch1"));
+        client.approve_creator(&business, &id, &c1, &1_000_000);
+
+        client.apply_to_campaign(&c2, &id, &String::from_str(&env, "pitch2"));
+        let result = client.try_approve_creator(&business, &id, &c2, &1);
+        assert_eq!(result, Err(Ok(Error::MaxCreatorsReached)));
+    }
+
+    #[test]
+    fn budget_below_obligations() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 0);
+        let id = create_funded_campaign(&env, &client, &business, &token, 5_000_000, 5);
+
+        let c1 = Address::generate(&env);
+        client.apply_to_campaign(&c1, &id, &String::from_str(&env, "pitch1"));
+        client.approve_creator(&business, &id, &c1, &4_000_000);
+
+        let c2 = Address::generate(&env);
+        client.apply_to_campaign(&c2, &id, &String::from_str(&env, "pitch2"));
+        let result = client.try_approve_creator(&business, &id, &c2, &2_000_000);
+        assert_eq!(result, Err(Ok(Error::InsufficientEscrowBalance)));
+    }
+
+    #[test]
+    fn fee_too_high() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(crate::CampaignEscrowContract, ());
+        let client = CampaignEscrowContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let dispute = Address::generate(&env);
+        let result = client.try_initialize(
+            &admin,
+            &dispute,
+            &(ads_bazaar_shared::BASIS_POINTS_DENOMINATOR + 1),
+        );
+        assert_eq!(result, Err(Ok(Error::FeeTooHigh)));
+    }
+
+    #[test]
+    fn invalid_deadline_order() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+
+        let now = env.ledger().timestamp();
+        let deadline = now + 300;
+        let asset = usdc(&env, &token);
+        let result = client.try_create_campaign(
+            &business,
+            &asset,
+            &10_000_000,
+            &5,
+            &deadline,
+            &deadline,
+            &String::from_str(&env, "ipfs://brief"),
+        );
+        assert_eq!(result, Err(Ok(Error::InvalidDeadlineOrder)));
+    }
+
+    #[test]
+    fn deadline_in_past() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+
+        let now = env.ledger().timestamp();
+        let asset = usdc(&env, &token);
+        let result = client.try_create_campaign(
+            &business,
+            &asset,
+            &10_000_000,
+            &5,
+            &(now - 100),
+            &(now + 604_800),
+            &String::from_str(&env, "ipfs://brief"),
+        );
+        assert_eq!(result, Err(Ok(Error::DeadlineInPast)));
+    }
+
+    #[test]
+    fn application_deadline_passed() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+
+        let now = env.ledger().timestamp();
+        let asset = usdc(&env, &token);
+        let id = client.create_campaign(
+            &business,
+            &asset,
+            &10_000_000,
+            &5,
+            &(now + 86_400),
+            &(now + 604_800),
+            &String::from_str(&env, "ipfs://brief"),
+        );
+        client.fund_campaign(&business, &id);
+
+        advance_time(&env, 86_400 + 10);
+
+        let creator = Address::generate(&env);
+        let result = client.try_apply_to_campaign(&creator, &id, &String::from_str(&env, "pitch"));
+        assert_eq!(result, Err(Ok(Error::ApplicationDeadlinePassed)));
+    }
+
+    #[test]
+    fn content_deadline_passed() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+        let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
+
+        let creator = Address::generate(&env);
+        client.apply_to_campaign(&creator, &id, &String::from_str(&env, "pitch"));
+        client.approve_creator(&business, &id, &creator, &1_000_000);
+
+        advance_time(&env, 604_800 + 10);
+
+        let result = client.try_submit_proof(&creator, &id, &String::from_str(&env, "proof"));
+        assert_eq!(result, Err(Ok(Error::ContentDeadlinePassed)));
     }
 }
 
