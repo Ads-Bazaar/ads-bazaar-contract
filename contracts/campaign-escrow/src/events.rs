@@ -8,7 +8,7 @@
 #![allow(dead_code)]
 
 use ads_bazaar_shared::CampaignId;
-use soroban_sdk::{contractevent, Address, BytesN};
+use soroban_sdk::{contractevent, Address, BytesN, String};
 
 #[contractevent]
 #[derive(Clone, Debug)]
@@ -56,6 +56,15 @@ pub struct ProofSubmitted {
 
 #[contractevent]
 #[derive(Clone, Debug)]
+pub struct SubmissionRejected {
+    #[topic]
+    pub campaign_id: CampaignId,
+    #[topic]
+    pub creator: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
 pub struct PaymentReleased {
     #[topic]
     pub campaign_id: CampaignId,
@@ -70,6 +79,14 @@ pub struct CampaignCancelled {
     #[topic]
     pub campaign_id: CampaignId,
     pub refunded_amount: i128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct SurplusReclaimed {
+    #[topic]
+    pub campaign_id: CampaignId,
+    pub amount: i128,
 }
 
 /// Emitted by `pause`. Already wired up (unlike most events above, which
@@ -111,4 +128,40 @@ pub struct AdminTransferred {
 #[derive(Clone, Debug)]
 pub struct ContractUpgraded {
     pub new_wasm_hash: BytesN<32>,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct FeeUpdated {
+    #[topic]
+    pub admin: Address,
+    pub new_fee_bps: i128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct TreasuryUpdated {
+    #[topic]
+    pub admin: Address,
+    pub new_treasury: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct CampaignMetadataUpdated {
+    #[topic]
+    pub campaign_id: CampaignId,
+    pub business: Address,
+    pub new_metadata: String,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct DisputeResolved {
+    #[topic]
+    pub campaign_id: CampaignId,
+    #[topic]
+    pub creator: Address,
+    pub creator_amount: i128,
+    pub business_amount: i128,
 }

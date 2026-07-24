@@ -6,14 +6,11 @@
 //! individual test modules stay focused on assertions.
 #![cfg(test)]
 
-use super::*;
-use soroban_sdk::testutils::Address as _;
-use soroban_sdk::Env;
-
 mod test_helpers {
-    use super::*;
-    use soroban_sdk::testutils::Ledger;
-    use soroban_sdk::{token::StellarAssetClient, Address, String};
+    use crate::{CampaignEscrowContract, CampaignEscrowContractClient, PayoutAsset};
+    use soroban_sdk::testutils::{Address as _, Ledger as _};
+    use soroban_sdk::token::StellarAssetClient;
+    use soroban_sdk::{Address, Env, String};
 
     /// Base ledger timestamp all tests start from (so deadlines are relative
     /// and controllable via `advance_time` / direct assignment).
@@ -210,6 +207,33 @@ mod test_happy_path {
     }
 
     #[test]
+    fn approve_two_distinct_creators() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+        let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
+
+        let creator_a = Address::generate(&env);
+        let creator_b = Address::generate(&env);
+
+        client.apply_to_campaign(
+            &creator_a,
+            &id,
+            &soroban_sdk::String::from_str(&env, "pitch-a"),
+        );
+        client.apply_to_campaign(
+            &creator_b,
+            &id,
+            &soroban_sdk::String::from_str(&env, "pitch-b"),
+        );
+
+        client.approve_creator(&business, &id, &creator_a, &1_000_000);
+        client.approve_creator(&business, &id, &creator_b, &1_000_000);
+
+        let campaign = client.get_campaign(&id);
+        assert_eq!(campaign.approved_count, 2);
+    }
+
+    #[test]
     fn fee_calculation_50bps() {
         let (env, contract_id) = setup_env();
         let (client, admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
@@ -320,6 +344,10 @@ mod test_happy_path {
         );
         // Business rejects the proof.
         client.reject_submission(&business, &id, &creator);
+
+        // Verify it was marked as Rejected
+        let app = client.get_application(&id, &creator);
+        assert_eq!(app.status, ads_bazaar_shared::ApplicationStatus::Rejected);
         // Creator resubmits.
         client.submit_proof(
             &creator,
@@ -669,28 +697,123 @@ mod test_auth_failures {
     }
 }
 
-mod test_admin_basics {
-    use super::test_helpers::setup_env;
-    use crate::{CampaignEscrowContractClient, Error};
+mod test_deadline_enforcement {
+    use super::test_helpers::*;
+    use crate::Error;
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{Address, String};
+
+    #[test]
+    fn apply_after_application_deadline() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+
+        let now = env.ledger().timestamp();
+        let asset = usdc(&env, &token);
+        let id = client.create_campaign(
+            &business,
+            &asset,
+            &10_000_000,
+            &5,
+            &(now + 86_400),
+            &(now + 604_800),
+            &String::from_str(&env, "ipfs://brief"),
+        );
+        client.fund_campaign(&business, &id);
+
+        // Move past the application deadline.
+        advance_time(&env, 86_400 + 10);
+
+        let creator = Address::generate(&env);
+        let result = client.try_apply_to_campaign(&creator, &id, &String::from_str(&env, "pitch"));
+        assert_eq!(result, Err(Ok(Error::ApplicationDeadlinePassed)));
+    }
+
+    #[test]
+    fn submit_after_content_deadline() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+        let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
+
+        let creator = Address::generate(&env);
+        client.apply_to_campaign(&creator, &id, &String::from_str(&env, "pitch"));
+        client.approve_creator(&business, &id, &creator, &1_000_000);
+
+        // Move past the content deadline.
+        advance_time(&env, 604_800 + 10);
+
+        let result = client.try_submit_proof(&creator, &id, &String::from_str(&env, "proof"));
+        assert_eq!(result, Err(Ok(Error::ContentDeadlinePassed)));
+    }
+
+    #[test]
+    fn create_with_past_deadline() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+
+        let now = env.ledger().timestamp();
+        let asset = usdc(&env, &token);
+        let result = client.try_create_campaign(
+            &business,
+            &asset,
+            &10_000_000,
+            &5,
+            &(now - 100),
+            &(now + 604_800),
+            &String::from_str(&env, "ipfs://brief"),
+        );
+        assert_eq!(result, Err(Ok(Error::DeadlineInPast)));
+    }
+
+    #[test]
+    fn create_with_equal_deadlines() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+
+        let now = env.ledger().timestamp();
+        let deadline = now + 300;
+        let asset = usdc(&env, &token);
+        let result = client.try_create_campaign(
+            &business,
+            &asset,
+            &10_000_000,
+            &5,
+            &deadline,
+            &deadline,
+            &String::from_str(&env, "ipfs://brief"),
+        );
+        assert_eq!(result, Err(Ok(Error::InvalidDeadlineOrder)));
+    }
+
+    #[test]
+    fn expire_before_deadline() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+        let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
+
+        // Still before the content deadline.
+        let result = client.try_expire_campaign(&business, &id);
+        assert_eq!(result, Err(Ok(Error::DeadlineNotReached)));
+    }
+}
+
+mod test_version_upgrade {
+    use super::test_helpers::*;
+    use crate::Error;
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::{Address, BytesN, String};
 
     #[test]
     fn version_returns_initial_version_after_initialize() {
         let (env, contract_id) = setup_env();
-        let client = CampaignEscrowContractClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        let dispute_contract = Address::generate(&env);
-        client.initialize(&admin, &dispute_contract, &250);
-
+        let (client, _admin, _dispute, _business, _token) = bootstrap(&env, &contract_id, 250);
         assert_eq!(client.version(), String::from_str(&env, "0.1.0"));
     }
 
     #[test]
     fn version_fails_before_initialization() {
         let (env, contract_id) = setup_env();
-        let client = CampaignEscrowContractClient::new(&env, &contract_id);
-
+        let client = crate::CampaignEscrowContractClient::new(&env, &contract_id);
         let result = client.try_version();
         assert_eq!(result, Err(Ok(Error::NotInitialized)));
     }
@@ -698,57 +821,37 @@ mod test_admin_basics {
     #[test]
     fn upgrade_rejects_non_admin() {
         let (env, contract_id) = setup_env();
-        let client = CampaignEscrowContractClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        let dispute_contract = Address::generate(&env);
-        client.initialize(&admin, &dispute_contract, &250);
+        let (client, _admin, _dispute, _business, _token) = bootstrap(&env, &contract_id, 250);
 
         let not_admin = Address::generate(&env);
         let new_wasm_hash = BytesN::from_array(&env, &[7u8; 32]);
         let result = client.try_upgrade(&not_admin, &new_wasm_hash);
         assert_eq!(result, Err(Ok(Error::Unauthorized)));
     }
+}
+
+mod test_pause {
+    use super::test_helpers::*;
+    use crate::Error;
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{Address, String};
 
     #[test]
-    fn pause_blocks_apply_to_campaign() {
+    fn pause_unpause_toggles_is_paused() {
         let (env, contract_id) = setup_env();
-        let client = CampaignEscrowContractClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        let dispute_contract = Address::generate(&env);
-        client.initialize(&admin, &dispute_contract, &250);
+        let (client, admin, _dispute, _business, _token) = bootstrap(&env, &contract_id, 250);
+
+        assert!(!client.is_paused());
         client.pause(&admin);
         assert!(client.is_paused());
-
-        let creator = Address::generate(&env);
-        let result =
-            client.try_apply_to_campaign(&creator, &0, &String::from_str(&env, "ipfs://pitch"));
-        assert_eq!(result, Err(Ok(Error::ContractPaused)));
-    }
-
-    #[test]
-    fn view_functions_readable_while_paused() {
-        let (env, contract_id) = setup_env();
-        let client = CampaignEscrowContractClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        let dispute_contract = Address::generate(&env);
-        client.initialize(&admin, &dispute_contract, &250);
-        client.pause(&admin);
-
-        let config = client.get_protocol_config();
-        assert_eq!(config.admin, admin);
-
-        let result = client.try_get_campaign(&0);
-        assert_eq!(result, Err(Ok(Error::CampaignNotFound)));
-        assert!(client.is_paused());
+        client.unpause(&admin);
+        assert!(!client.is_paused());
     }
 
     #[test]
     fn non_admin_cannot_pause() {
         let (env, contract_id) = setup_env();
-        let client = CampaignEscrowContractClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        let dispute_contract = Address::generate(&env);
-        client.initialize(&admin, &dispute_contract, &250);
+        let (client, _admin, _dispute, _business, _token) = bootstrap(&env, &contract_id, 250);
 
         let not_admin = Address::generate(&env);
         let result = client.try_pause(&not_admin);
@@ -758,10 +861,7 @@ mod test_admin_basics {
     #[test]
     fn non_admin_cannot_unpause() {
         let (env, contract_id) = setup_env();
-        let client = CampaignEscrowContractClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        let dispute_contract = Address::generate(&env);
-        client.initialize(&admin, &dispute_contract, &250);
+        let (client, admin, _dispute, _business, _token) = bootstrap(&env, &contract_id, 250);
         client.pause(&admin);
 
         let not_admin = Address::generate(&env);
@@ -770,17 +870,535 @@ mod test_admin_basics {
     }
 
     #[test]
-    fn pause_unpause_toggles_is_paused() {
+    fn pause_blocks_apply_to_campaign() {
         let (env, contract_id) = setup_env();
-        let client = CampaignEscrowContractClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        let dispute_contract = Address::generate(&env);
-        client.initialize(&admin, &dispute_contract, &250);
-
-        assert!(!client.is_paused());
+        let (client, admin, _dispute, business, token) = bootstrap(&env, &contract_id, 250);
+        let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
         client.pause(&admin);
-        assert!(client.is_paused());
+
+        let creator = Address::generate(&env);
+        let result = client.try_apply_to_campaign(&creator, &id, &String::from_str(&env, "pitch"));
+        assert_eq!(result, Err(Ok(Error::ContractPaused)));
+    }
+
+    #[test]
+    fn unpause_allows_apply_to_campaign() {
+        let (env, contract_id) = setup_env();
+        let (client, admin, _dispute, business, token) = bootstrap(&env, &contract_id, 250);
+        let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
+        client.pause(&admin);
         client.unpause(&admin);
-        assert!(!client.is_paused());
+
+        let creator = Address::generate(&env);
+        client.apply_to_campaign(&creator, &id, &String::from_str(&env, "pitch"));
+        let application = client.get_application(&id, &creator);
+        assert_eq!(
+            application.status,
+            ads_bazaar_shared::ApplicationStatus::Pending
+        );
+    }
+
+    #[test]
+    fn view_functions_readable_while_paused() {
+        let (env, contract_id) = setup_env();
+        let (client, admin, _dispute, business, token) = bootstrap(&env, &contract_id, 250);
+        let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
+        client.pause(&admin);
+
+        let config = client.get_protocol_config();
+        assert_eq!(config.admin, admin);
+
+        let campaign = client.get_campaign(&id);
+        assert_eq!(campaign.id, id);
+
+        assert!(client.is_paused());
+    }
+}
+
+mod admin_updates {
+    use super::test_helpers::*;
+    use crate::Error;
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::token::Client as TokenClient;
+    use soroban_sdk::Address;
+
+    #[test]
+    fn update_fee_and_treasury() {
+        let (env, contract_id) = setup_env();
+        let (client, admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+        let token_client = TokenClient::new(&env, &token);
+
+        let creator = Address::generate(&env);
+        let gross: i128 = 1_000_000;
+        let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
+
+        // Update fee from 50 to 200 bps
+        client.update_fee_bps(&admin, &200);
+
+        // Update treasury
+        let new_treasury = Address::generate(&env);
+        client.update_treasury(&admin, &new_treasury);
+
+        // Verify config updated — this reflects the live/global value used
+        // by future campaigns, not this already-created one.
+        let config = client.get_protocol_config();
+        assert_eq!(config.fee_bps, 200);
+        assert_eq!(config.treasury, new_treasury);
+        assert_eq!(client.get_campaign(&id).fee_bps, 50);
+
+        // Run through to claim
+        client.apply_to_campaign(&creator, &id, &soroban_sdk::String::from_str(&env, "pitch"));
+        client.approve_creator(&business, &id, &creator, &gross);
+        client.submit_proof(&creator, &id, &soroban_sdk::String::from_str(&env, "proof"));
+        client.approve_submission(&business, &id, &creator);
+
+        let creator_before = token_client.balance(&creator);
+        let treasury_before = token_client.balance(&new_treasury);
+
+        client.claim_payment(&creator, &id);
+
+        let creator_after = token_client.balance(&creator);
+        let treasury_after = token_client.balance(&new_treasury);
+
+        // The payout uses the 50 bps snapshotted at creation, not the 200
+        // bps the fee was later updated to — but the fee still lands at the
+        // *new* treasury address, since treasury isn't snapshotted per campaign.
+        let expected_fee = (gross * 50) / 10_000;
+        let expected_net = gross - expected_fee;
+
+        assert_eq!(treasury_after - treasury_before, expected_fee);
+        assert_eq!(creator_after - creator_before, expected_net);
+    }
+
+    #[test]
+    fn new_campaign_uses_updated_fee() {
+        let (env, contract_id) = setup_env();
+        let (client, admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+        let token_client = TokenClient::new(&env, &token);
+
+        client.update_fee_bps(&admin, &200);
+
+        let creator = Address::generate(&env);
+        let gross: i128 = 1_000_000;
+        // Created after the update — should snapshot 200 bps, not 50.
+        let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
+        assert_eq!(client.get_campaign(&id).fee_bps, 200);
+
+        client.apply_to_campaign(&creator, &id, &soroban_sdk::String::from_str(&env, "pitch"));
+        client.approve_creator(&business, &id, &creator, &gross);
+        client.submit_proof(&creator, &id, &soroban_sdk::String::from_str(&env, "proof"));
+        client.approve_submission(&business, &id, &creator);
+
+        let creator_before = token_client.balance(&creator);
+        client.claim_payment(&creator, &id);
+        let creator_after = token_client.balance(&creator);
+
+        let expected_fee = (gross * 200) / 10_000;
+        assert_eq!(creator_after - creator_before, gross - expected_fee);
+    }
+
+    #[test]
+    fn update_fee_unauthorized() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, _business, _token) = bootstrap(&env, &contract_id, 50);
+        let unauthorized = Address::generate(&env);
+
+        let result = client.try_update_fee_bps(&unauthorized, &200);
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    }
+
+    #[test]
+    fn update_fee_too_high() {
+        let (env, contract_id) = setup_env();
+        let (client, admin, _dispute, _business, _token) = bootstrap(&env, &contract_id, 50);
+
+        let result = client.try_update_fee_bps(&admin, &1_001);
+        assert_eq!(result, Err(Ok(Error::FeeTooHigh)));
+    }
+}
+
+mod test_update_metadata {
+    use super::test_helpers::*;
+    use crate::Error;
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{Address, String};
+
+    #[test]
+    fn update_metadata_success() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+
+        let now = env.ledger().timestamp();
+        let asset = usdc(&env, &token);
+        let id = client.create_campaign(
+            &business,
+            &asset,
+            &10_000_000,
+            &5,
+            &(now + 86_400),
+            &(now + 604_800),
+            &String::from_str(&env, "ipfs://original-brief"),
+        );
+
+        client.update_campaign_metadata(
+            &id,
+            &business,
+            &String::from_str(&env, "ipfs://updated-brief"),
+        );
+
+        let campaign = client.get_campaign(&id);
+        assert_eq!(
+            campaign.metadata_uri,
+            String::from_str(&env, "ipfs://updated-brief")
+        );
+    }
+
+    #[test]
+    fn update_metadata_after_funding() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+
+        // Create and fund — still zero applicants, so metadata update
+        // should succeed when status is Funded.
+        let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
+
+        client.update_campaign_metadata(
+            &id,
+            &business,
+            &String::from_str(&env, "ipfs://updated-brief"),
+        );
+
+        let campaign = client.get_campaign(&id);
+        assert_eq!(
+            campaign.metadata_uri,
+            String::from_str(&env, "ipfs://updated-brief")
+        );
+    }
+
+    #[test]
+    fn not_campaign_owner_cannot_update_metadata() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+
+        let now = env.ledger().timestamp();
+        let asset = usdc(&env, &token);
+        let id = client.create_campaign(
+            &business,
+            &asset,
+            &10_000_000,
+            &5,
+            &(now + 86_400),
+            &(now + 604_800),
+            &String::from_str(&env, "ipfs://original-brief"),
+        );
+
+        let stranger = Address::generate(&env);
+        let result = client.try_update_campaign_metadata(
+            &id,
+            &stranger,
+            &String::from_str(&env, "ipfs://hijacked-brief"),
+        );
+        assert_eq!(result, Err(Ok(Error::NotCampaignOwner)));
+    }
+
+    #[test]
+    fn applications_exist_blocks_metadata_update() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+
+        let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
+
+        let creator = Address::generate(&env);
+        client.apply_to_campaign(&creator, &id, &String::from_str(&env, "pitch"));
+
+        let result = client.try_update_campaign_metadata(
+            &id,
+            &business,
+            &String::from_str(&env, "ipfs://updated-brief"),
+        );
+        assert_eq!(result, Err(Ok(Error::ApplicationsExist)));
+    }
+
+    #[test]
+    fn empty_metadata_rejected() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+
+        let now = env.ledger().timestamp();
+        let asset = usdc(&env, &token);
+        let id = client.create_campaign(
+            &business,
+            &asset,
+            &10_000_000,
+            &5,
+            &(now + 86_400),
+            &(now + 604_800),
+            &String::from_str(&env, "ipfs://original-brief"),
+        );
+
+        let result =
+            client.try_update_campaign_metadata(&id, &business, &String::from_str(&env, ""));
+        assert_eq!(result, Err(Ok(Error::InvalidMetadata)));
+    }
+
+    #[test]
+    fn cancelled_campaign_rejects_metadata_update() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+
+        let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
+        client.cancel_campaign(&business, &id);
+
+        let result = client.try_update_campaign_metadata(
+            &id,
+            &business,
+            &String::from_str(&env, "ipfs://updated-brief"),
+        );
+        assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+    }
+
+    #[test]
+    fn metadata_not_changed_on_failure() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+
+        let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
+
+        let creator = Address::generate(&env);
+        client.apply_to_campaign(&creator, &id, &String::from_str(&env, "pitch"));
+
+        // Attempt update fails because an applicant exists.
+        let _ = client.try_update_campaign_metadata(
+            &id,
+            &business,
+            &String::from_str(&env, "ipfs://should-not-persist"),
+        );
+
+        // Metadata must still be the original.
+        let campaign = client.get_campaign(&id);
+        assert_eq!(
+            campaign.metadata_uri,
+            String::from_str(&env, "ipfs://brief")
+        );
+    }
+
+    #[test]
+    fn metadata_update_blocked_when_paused() {
+        let (env, contract_id) = setup_env();
+        let (client, admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+
+        let now = env.ledger().timestamp();
+        let asset = usdc(&env, &token);
+        let id = client.create_campaign(
+            &business,
+            &asset,
+            &10_000_000,
+            &5,
+            &(now + 86_400),
+            &(now + 604_800),
+            &String::from_str(&env, "ipfs://original-brief"),
+        );
+
+        client.pause(&admin);
+
+        let result = client.try_update_campaign_metadata(
+            &id,
+            &business,
+            &String::from_str(&env, "ipfs://updated-brief"),
+        );
+        assert_eq!(result, Err(Ok(Error::ContractPaused)));
+    }
+
+    #[test]
+    fn completed_campaign_rejects_metadata_update() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 0);
+        let _token_client = soroban_sdk::token::Client::new(&env, &token);
+
+        let payout: i128 = 1_000_000;
+        let id = create_funded_campaign(&env, &client, &business, &token, payout, 1);
+
+        let creator = Address::generate(&env);
+        client.apply_to_campaign(&creator, &id, &String::from_str(&env, "pitch"));
+        client.approve_creator(&business, &id, &creator, &payout);
+        client.submit_proof(&creator, &id, &String::from_str(&env, "proof"));
+        client.approve_submission(&business, &id, &creator);
+        client.claim_payment(&creator, &id);
+
+        // Campaign is now Completed — metadata update should be rejected.
+        let result = client.try_update_campaign_metadata(
+            &id,
+            &business,
+            &String::from_str(&env, "ipfs://updated-brief"),
+        );
+        assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+    }
+}
+
+mod test_resolve_dispute {
+    use super::test_helpers::*;
+    use crate::{DisputeResolution, Error};
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::token::Client as TokenClient;
+    use soroban_sdk::Address;
+
+    #[test]
+    fn pay_creator_resolution_pays_creator_minus_fee() {
+        let (env, contract_id) = setup_env();
+        let (client, admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+        let token_client = TokenClient::new(&env, &token);
+
+        let payout: i128 = 1_000_000;
+        let id = create_funded_campaign(&env, &client, &business, &token, payout, 5);
+        let creator = Address::generate(&env);
+        client.apply_to_campaign(&creator, &id, &soroban_sdk::String::from_str(&env, "pitch"));
+        client.approve_creator(&business, &id, &creator, &payout);
+
+        let creator_before = token_client.balance(&creator);
+        let business_before = token_client.balance(&business);
+        let treasury_before = token_client.balance(&admin);
+
+        client.resolve_dispute(&admin, &id, &creator, &DisputeResolution::PayCreator);
+
+        let fee = payout * 50 / ads_bazaar_shared::BASIS_POINTS_DENOMINATOR;
+        assert_eq!(
+            token_client.balance(&creator),
+            creator_before + payout - fee
+        );
+        assert_eq!(token_client.balance(&admin), treasury_before + fee);
+        // Business's share (nothing for this creator's slot) leaves their
+        // balance unchanged from before resolution.
+        assert_eq!(token_client.balance(&business), business_before);
+
+        let application = client.get_application(&id, &creator);
+        assert_eq!(
+            application.status,
+            ads_bazaar_shared::ApplicationStatus::Paid
+        );
+    }
+
+    #[test]
+    fn refund_business_resolution_returns_full_amount_no_fee() {
+        let (env, contract_id) = setup_env();
+        let (client, admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+        let token_client = TokenClient::new(&env, &token);
+
+        let payout: i128 = 1_000_000;
+        let id = create_funded_campaign(&env, &client, &business, &token, payout, 5);
+        let creator = Address::generate(&env);
+        client.apply_to_campaign(&creator, &id, &soroban_sdk::String::from_str(&env, "pitch"));
+        client.approve_creator(&business, &id, &creator, &payout);
+
+        let business_before = token_client.balance(&business);
+        let creator_before = token_client.balance(&creator);
+        let treasury_before = token_client.balance(&admin);
+
+        client.resolve_dispute(&admin, &id, &creator, &DisputeResolution::RefundBusiness);
+
+        // Full amount, no fee deducted.
+        assert_eq!(token_client.balance(&business), business_before + payout);
+        assert_eq!(token_client.balance(&creator), creator_before);
+        assert_eq!(token_client.balance(&admin), treasury_before);
+    }
+
+    #[test]
+    fn split_resolution_divides_correctly() {
+        let (env, contract_id) = setup_env();
+        let (client, admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+        let token_client = TokenClient::new(&env, &token);
+
+        let payout: i128 = 1_000_000;
+        let id = create_funded_campaign(&env, &client, &business, &token, payout, 5);
+        let creator = Address::generate(&env);
+        client.apply_to_campaign(&creator, &id, &soroban_sdk::String::from_str(&env, "pitch"));
+        client.approve_creator(&business, &id, &creator, &payout);
+
+        let business_before = token_client.balance(&business);
+        let creator_before = token_client.balance(&creator);
+
+        // 60% to creator, 40% to business.
+        client.resolve_dispute(&admin, &id, &creator, &DisputeResolution::Split(6_000));
+
+        let creator_gross = payout * 6_000 / 10_000;
+        let fee = creator_gross * 50 / ads_bazaar_shared::BASIS_POINTS_DENOMINATOR;
+        let creator_net = creator_gross - fee;
+        let business_amount = payout - creator_gross;
+
+        assert_eq!(token_client.balance(&creator), creator_before + creator_net);
+        assert_eq!(
+            token_client.balance(&business),
+            business_before + business_amount
+        );
+    }
+
+    #[test]
+    fn non_admin_cannot_resolve_dispute() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+
+        let payout: i128 = 1_000_000;
+        let id = create_funded_campaign(&env, &client, &business, &token, payout, 5);
+        let creator = Address::generate(&env);
+        client.apply_to_campaign(&creator, &id, &soroban_sdk::String::from_str(&env, "pitch"));
+        client.approve_creator(&business, &id, &creator, &payout);
+
+        let stranger = Address::generate(&env);
+        let result =
+            client.try_resolve_dispute(&stranger, &id, &creator, &DisputeResolution::PayCreator);
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    }
+
+    #[test]
+    fn resolve_dispute_rejects_already_paid() {
+        let (env, contract_id) = setup_env();
+        let (client, admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+
+        // Two creators, so the campaign stays Active (escrow_balance > 0)
+        // after the first one claims — isolating the already-Paid
+        // application check from the separate Completed-campaign check.
+        let payout: i128 = 1_000_000;
+        let id = create_funded_campaign(&env, &client, &business, &token, payout * 2, 5);
+        let creator = Address::generate(&env);
+        let other_creator = Address::generate(&env);
+        client.apply_to_campaign(&creator, &id, &soroban_sdk::String::from_str(&env, "pitch"));
+        client.approve_creator(&business, &id, &creator, &payout);
+        client.apply_to_campaign(
+            &other_creator,
+            &id,
+            &soroban_sdk::String::from_str(&env, "pitch"),
+        );
+        client.approve_creator(&business, &id, &other_creator, &payout);
+        client.submit_proof(&creator, &id, &soroban_sdk::String::from_str(&env, "proof"));
+        client.approve_submission(&business, &id, &creator);
+        client.claim_payment(&creator, &id);
+
+        let result =
+            client.try_resolve_dispute(&admin, &id, &creator, &DisputeResolution::PayCreator);
+        assert_eq!(result, Err(Ok(Error::SubmissionNotPayable)));
+    }
+
+    #[test]
+    fn resolve_dispute_works_on_rejected_application() {
+        let (env, contract_id) = setup_env();
+        let (client, admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+        let token_client = TokenClient::new(&env, &token);
+
+        let payout: i128 = 1_000_000;
+        let id = create_funded_campaign(&env, &client, &business, &token, payout, 5);
+        let creator = Address::generate(&env);
+        client.apply_to_campaign(&creator, &id, &soroban_sdk::String::from_str(&env, "pitch"));
+        client.approve_creator(&business, &id, &creator, &payout);
+        client.submit_proof(&creator, &id, &soroban_sdk::String::from_str(&env, "proof"));
+        // Business rejects — a natural point of disagreement to escalate.
+        client.reject_submission(&business, &id, &creator);
+
+        let creator_before = token_client.balance(&creator);
+        client.resolve_dispute(&admin, &id, &creator, &DisputeResolution::PayCreator);
+
+        let fee = payout * 50 / ads_bazaar_shared::BASIS_POINTS_DENOMINATOR;
+        assert_eq!(
+            token_client.balance(&creator),
+            creator_before + payout - fee
+        );
     }
 }

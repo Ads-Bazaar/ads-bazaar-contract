@@ -1,10 +1,6 @@
 use soroban_sdk::contracterror;
 
 /// Errors returned by the campaign-escrow contract.
-///
-/// TODO(contributors): extend as apply/approve/proof/dispute logic is filled
-/// in — e.g. `ApplicationAlreadyExists`, `ProofAlreadySubmitted`,
-/// `NotApprovedCreator`, `DisputeAlreadyRaised`.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -35,8 +31,16 @@ pub enum Error {
     DeadlineInPast = 17,
     /// The campaign is not yet past its content deadline.
     DeadlineNotReached = 18,
-    CampaignClosed = 19,
     /// Returned by any guarded state-changing function while the contract
     /// is paused via `pause`. See `require_not_paused` in `lib.rs`.
-    ContractPaused = 20,
+    ContractPaused = 19,
+    /// The application deadline is not before the completion deadline.
+    InvalidDeadlineOrder = 20,
+    /// The updated fee is too high (exceeds the 1000 bps maximum).
+    FeeTooHigh = 21,
+    /// At least one creator has already applied to this campaign, so the
+    /// campaign brief / metadata cannot be changed.
+    ApplicationsExist = 22,
+    /// The metadata string must be non-empty.
+    InvalidMetadata = 23,
 }
