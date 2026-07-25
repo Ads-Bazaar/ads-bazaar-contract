@@ -1142,6 +1142,50 @@ mod test_update_metadata {
         );
         assert_eq!(result, Err(Ok(Error::InvalidStatus)));
     }
+
+    /// Applying to a campaign must stay O(1) in storage-write cost
+    /// regardless of how many creators already applied — the applicant
+    /// tracking is a counter, not a growing list. Apply with a large number
+    /// of prior applicants, then confirm the write cost of a later apply is
+    /// no larger than an early one, and that the lock-after-first-apply
+    /// behavior from `applications_exist_blocks_metadata_update` still holds.
+    #[test]
+    fn applying_with_many_prior_applicants_does_not_regress_write_cost() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+
+        // max_creators is a cap on approved creators, not applicants, so a
+        // low cap here doesn't limit how many creators can apply.
+        let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 1);
+
+        let first_creator = Address::generate(&env);
+        client.apply_to_campaign(&first_creator, &id, &String::from_str(&env, "pitch"));
+        let first_apply_write_bytes = env.cost_estimate().resources().write_bytes;
+
+        // A large number of additional creators apply to the same campaign.
+        const N: u32 = 200;
+        for _ in 0..N {
+            let creator = Address::generate(&env);
+            client.apply_to_campaign(&creator, &id, &String::from_str(&env, "pitch"));
+        }
+
+        let last_creator = Address::generate(&env);
+        client.apply_to_campaign(&last_creator, &id, &String::from_str(&env, "pitch"));
+        let last_apply_write_bytes = env.cost_estimate().resources().write_bytes;
+
+        // The write cost of applying must not grow with the number of prior
+        // applicants — an ever-growing Vec would regress this.
+        assert_eq!(first_apply_write_bytes, last_apply_write_bytes);
+
+        // The brief is still locked once any creator has applied, exactly
+        // as in `applications_exist_blocks_metadata_update`.
+        let result = client.try_update_campaign_metadata(
+            &id,
+            &business,
+            &String::from_str(&env, "ipfs://updated-brief"),
+        );
+        assert_eq!(result, Err(Ok(Error::ApplicationsExist)));
+    }
 }
 
 mod test_resolve_dispute {
