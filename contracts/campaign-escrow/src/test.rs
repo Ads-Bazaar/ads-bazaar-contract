@@ -519,6 +519,97 @@ mod test_protocol_config {
     }
 }
 
+mod test_admin_transfer {
+    use super::test_helpers::setup_env;
+    use crate::{storage, CampaignEscrowContractClient, Error};
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::Address;
+
+    #[test]
+    fn propose_admin_rejects_non_admin() {
+        let (env, contract_id) = setup_env();
+        let client = CampaignEscrowContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let dispute_contract = Address::generate(&env);
+        let not_admin = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        client.initialize(&admin, &dispute_contract, &250);
+
+        let result = client.try_propose_admin(&not_admin, &new_admin);
+
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    }
+
+    #[test]
+    fn propose_admin_stores_pending_candidate() {
+        let (env, contract_id) = setup_env();
+        let client = CampaignEscrowContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let dispute_contract = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        client.initialize(&admin, &dispute_contract, &250);
+
+        client.propose_admin(&admin, &new_admin);
+
+        let pending_admin = env.as_contract(&client.address, || storage::get_pending_admin(&env));
+        assert_eq!(pending_admin, Some(new_admin));
+    }
+
+    #[test]
+    fn full_two_step_transfer_replaces_admin() {
+        let (env, contract_id) = setup_env();
+        let client = CampaignEscrowContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let dispute_contract = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        client.initialize(&admin, &dispute_contract, &250);
+
+        client.propose_admin(&admin, &new_admin);
+        client.accept_admin(&new_admin);
+
+        let pending_admin = env.as_contract(&client.address, || storage::get_pending_admin(&env));
+        assert_eq!(pending_admin, None);
+        let stored_admin = env.as_contract(&client.address, || storage::get_admin(&env));
+        assert_eq!(stored_admin, Ok(new_admin.clone()));
+
+        let old_admin_result = client.try_update_fee_bps(&admin, &100);
+        assert_eq!(old_admin_result, Err(Ok(Error::Unauthorized)));
+
+        client.update_fee_bps(&new_admin, &100);
+        assert_eq!(client.get_protocol_config().fee_bps, 100);
+    }
+
+    #[test]
+    fn accept_admin_rejects_wrong_address() {
+        let (env, contract_id) = setup_env();
+        let client = CampaignEscrowContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let dispute_contract = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        let wrong_admin = Address::generate(&env);
+        client.initialize(&admin, &dispute_contract, &250);
+
+        client.propose_admin(&admin, &new_admin);
+        let result = client.try_accept_admin(&wrong_admin);
+
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    }
+
+    #[test]
+    fn accept_admin_before_propose_is_unauthorized() {
+        let (env, contract_id) = setup_env();
+        let client = CampaignEscrowContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let dispute_contract = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        client.initialize(&admin, &dispute_contract, &250);
+
+        let result = client.try_accept_admin(&new_admin);
+
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    }
+}
+
 mod test_auth_failures {
     use super::test_helpers::*;
     use crate::Error;

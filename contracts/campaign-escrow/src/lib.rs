@@ -112,6 +112,45 @@ impl CampaignEscrowContract {
         storage::get_paused(&env)
     }
 
+    /// Propose a new admin address. The transfer is not finalized until the
+    /// proposed address calls `accept_admin`, proving control of that key.
+    pub fn propose_admin(
+        env: Env,
+        current_admin: Address,
+        new_admin: Address,
+    ) -> Result<(), Error> {
+        require_admin(&env, &current_admin)?;
+        storage::set_pending_admin(&env, &new_admin);
+        storage::extend_instance_ttl(&env);
+        events::AdminProposed {
+            current_admin,
+            new_admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Accept a pending admin transfer. Only the exact proposed address may
+    /// finalize the handover.
+    pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        new_admin.require_auth();
+        let pending_admin = storage::get_pending_admin(&env).ok_or(Error::Unauthorized)?;
+        if pending_admin != new_admin {
+            return Err(Error::Unauthorized);
+        }
+
+        let previous_admin = storage::get_admin(&env)?;
+        storage::set_admin(&env, &new_admin);
+        storage::clear_pending_admin(&env);
+        storage::extend_instance_ttl(&env);
+        events::AdminTransferred {
+            previous_admin,
+            new_admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
     /// Update the platform fee for future `claim_payment` calls.
     /// The fee is read at claim time, so a fee change affects pending campaigns.
     /// Callable only by the admin.
