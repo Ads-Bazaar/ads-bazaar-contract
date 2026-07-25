@@ -45,4 +45,7 @@ pub enum Error {
     InvalidMetadata = 23,
     /// `max_creators` was set to zero when creating a campaign.
     InvalidCreatorCount = 24,
+    /// The application is frozen pending dispute arbitration, so it can
+    /// neither be paid out nor have its proof state changed.
+    PayoutFrozen = 25,
 }
