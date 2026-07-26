@@ -176,3 +176,15 @@ pub struct DisputeResolved {
     pub creator_amount: i128,
     pub business_amount: i128,
 }
+
+/// Emitted by `emergency_recover_campaign`. Kept distinct from
+/// `CampaignCancelled` on purpose — this path bypasses the business's
+/// consent entirely, so it must be trivially greppable/auditable on its own,
+/// not blend in with routine cancellations.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct EmergencyRecovery {
+    #[topic]
+    pub campaign_id: CampaignId,
+    pub amount: i128,
+}

@@ -162,7 +162,7 @@ mod test_initialize {
 
 mod test_happy_path {
     use super::test_helpers::*;
-    use crate::CampaignEscrowContractClient;
+    use crate::{CampaignEscrowContractClient, Error};
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::token::Client as TokenClient;
     use soroban_sdk::{Address, Env};
@@ -486,6 +486,81 @@ mod test_happy_path {
         assert_eq!(token_client.balance(&creator), creator_before + payout);
         assert_eq!(token_client.balance(&contract_id), 0);
     }
+
+    #[test]
+    fn emergency_recover_sweeps_unallocated_to_treasury() {
+        let (env, contract_id) = setup_env();
+        let (client, admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+        let token_client = TokenClient::new(&env, &token);
+
+        let budget: i128 = 10_000_000;
+        let id = create_funded_campaign(&env, &client, &business, &token, budget, 5);
+
+        // Long past both the content deadline and the emergency-recovery
+        // grace period — the business is treated as unreachable.
+        advance_time(&env, 604_800 + crate::EMERGENCY_RECOVERY_GRACE_PERIOD + 10);
+
+        // Treasury defaults to `admin` at `initialize`.
+        let treasury_before = token_client.balance(&admin);
+        let business_before = token_client.balance(&business);
+        client.emergency_recover_campaign(&admin, &id);
+
+        // Nothing was ever committed, so the whole budget is recovered —
+        // and it goes to treasury, not back to the unreachable business.
+        assert_eq!(token_client.balance(&admin), treasury_before + budget);
+        assert_eq!(token_client.balance(&business), business_before);
+        assert_eq!(token_client.balance(&contract_id), 0);
+
+        let campaign = client.get_campaign(&id);
+        assert_eq!(
+            campaign.status,
+            ads_bazaar_shared::CampaignStatus::Cancelled
+        );
+    }
+
+    #[test]
+    fn emergency_recover_preserves_committed_payout() {
+        let (env, contract_id) = setup_env();
+        let (client, admin, _dispute, business, token) = bootstrap(&env, &contract_id, 0);
+        let token_client = TokenClient::new(&env, &token);
+
+        let payout: i128 = 1_000_000;
+        let budget: i128 = payout * 5;
+        let id = create_funded_campaign(&env, &client, &business, &token, budget, 5);
+
+        let creator = Address::generate(&env);
+        run_to_payable(&env, &client, &business, &creator, &id, payout);
+
+        advance_time(&env, 604_800 + crate::EMERGENCY_RECOVERY_GRACE_PERIOD + 10);
+
+        let treasury_before = token_client.balance(&admin);
+        client.emergency_recover_campaign(&admin, &id);
+        // Only the unallocated (budget - payout) portion goes to treasury.
+        assert_eq!(
+            token_client.balance(&admin),
+            treasury_before + budget - payout
+        );
+        assert_eq!(token_client.balance(&contract_id), payout);
+
+        // The approved creator can still claim their payout afterward —
+        // exactly as with cancel_campaign/expire_campaign/reclaim_surplus.
+        let creator_before = token_client.balance(&creator);
+        client.claim_payment(&creator, &id);
+        assert_eq!(token_client.balance(&creator), creator_before + payout);
+        assert_eq!(token_client.balance(&contract_id), 0);
+    }
+
+    #[test]
+    fn emergency_recover_rejects_already_cancelled_campaign() {
+        let (env, contract_id) = setup_env();
+        let (client, admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+        let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
+        client.cancel_campaign(&business, &id);
+
+        advance_time(&env, 604_800 + crate::EMERGENCY_RECOVERY_GRACE_PERIOD + 10);
+        let result = client.try_emergency_recover_campaign(&admin, &id);
+        assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+    }
 }
 
 mod test_protocol_config {
@@ -695,6 +770,19 @@ mod test_auth_failures {
         let result = client.try_approve_creator(&business, &id, &creator, &1_000_000);
         assert_eq!(result, Err(Ok(Error::AlreadySelected)));
     }
+
+    #[test]
+    fn non_admin_cannot_emergency_recover() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+        let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
+
+        advance_time(&env, 604_800 + crate::EMERGENCY_RECOVERY_GRACE_PERIOD + 10);
+
+        let stranger = Address::generate(&env);
+        let result = client.try_emergency_recover_campaign(&stranger, &id);
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    }
 }
 
 mod test_deadline_enforcement {
@@ -793,6 +881,23 @@ mod test_deadline_enforcement {
 
         // Still before the content deadline.
         let result = client.try_expire_campaign(&business, &id);
+        assert_eq!(result, Err(Ok(Error::DeadlineNotReached)));
+    }
+
+    #[test]
+    fn emergency_recover_before_grace_period_fails() {
+        let (env, contract_id) = setup_env();
+        let (client, admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+        let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
+
+        // Not reachable at all before the content deadline.
+        let result = client.try_emergency_recover_campaign(&admin, &id);
+        assert_eq!(result, Err(Ok(Error::DeadlineNotReached)));
+
+        // Past the content deadline — enough for `expire_campaign` — but
+        // nowhere near the much longer emergency-recovery grace period.
+        advance_time(&env, 604_800 + 10);
+        let result = client.try_emergency_recover_campaign(&admin, &id);
         assert_eq!(result, Err(Ok(Error::DeadlineNotReached)));
     }
 }
