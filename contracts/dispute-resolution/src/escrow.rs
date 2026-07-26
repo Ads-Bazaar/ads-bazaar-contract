@@ -19,5 +19,5 @@ use soroban_sdk::{contractclient, Address, Env};
 #[contractclient(name = "CampaignEscrowClient")]
 pub trait CampaignEscrow {
     fn get_campaign_business(env: Env, campaign_id: CampaignId) -> Address;
-    fn freeze_for_dispute(env: Env, campaign_id: CampaignId, creator: Address);
+    fn freeze_for_dispute(env: Env, caller: Address, campaign_id: CampaignId, creator: Address);
 }

@@ -92,7 +92,7 @@ impl DisputeResolutionContract {
 
         // Freeze first: if escrow refuses (no application, already paid) the
         // whole invocation traps and no dispute record is left behind.
-        escrow.freeze_for_dispute(&campaign_id, &creator);
+        escrow.freeze_for_dispute(&env.current_contract_address(), &campaign_id, &creator);
 
         let dispute_id = storage::next_dispute_id(&env);
         storage::set_dispute(
