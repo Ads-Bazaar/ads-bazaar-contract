@@ -28,6 +28,14 @@ use soroban_sdk::{contract, contractimpl, token, Address, BytesN, Env, String};
 /// below.
 const INITIAL_VERSION: &str = "0.1.0";
 
+/// Extra grace period (on top of `completion_deadline` already having
+/// passed) required before `emergency_recover_campaign` becomes callable.
+/// Deliberately months-scale — far longer than the days/weeks relevant to
+/// normal campaign operation — so this path can only ever apply to a
+/// campaign that has been abandoned, never as a shortcut around
+/// `expire_campaign`.
+const EMERGENCY_RECOVERY_GRACE_PERIOD: u64 = 180 * 24 * 60 * 60; // ~6 months
+
 /// Require that `admin` matches the address stored at `initialize` time.
 /// Returns `Error::Unauthorized` for any other caller. Used by `pause` and
 /// `unpause`.
@@ -624,6 +632,77 @@ impl CampaignEscrowContract {
         events::CampaignCancelled {
             campaign_id,
             refunded_amount: refund,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Admin-only emergency recovery for a campaign abandoned long past every
+    /// normal deadline — e.g. the business's signing key is lost, rotated
+    /// away from, or otherwise unreachable, so none of `cancel_campaign` /
+    /// `expire_campaign` / `reclaim_surplus` (all gated on
+    /// `business.require_auth()`) can ever be called again for it.
+    ///
+    /// Deliberately harder to reach than `expire_campaign`: gated on
+    /// `EMERGENCY_RECOVERY_GRACE_PERIOD` (months, not the days/weeks scale of
+    /// `completion_deadline`) *in addition to* `completion_deadline` having
+    /// already passed, so it can never substitute for the normal expiry path
+    /// and can't be used to casually bypass business consent.
+    ///
+    /// Only ever sweeps the unallocated remainder (`escrow_balance -
+    /// committed_payouts`), exactly like `cancel_campaign` / `expire_campaign`
+    /// / `reclaim_surplus` — a payout already committed to an approved
+    /// creator stays reserved and claimable via `claim_payment` regardless of
+    /// how long the business has been unreachable.
+    ///
+    /// Recovered funds go to `treasury`, not back to `business`: the whole
+    /// premise of this path is that the business's on-record address is
+    /// unreachable, so crediting funds there would just recreate the same
+    /// stuck-fund problem. Routing to `treasury` instead leaves them
+    /// reachable through a deliberate off-chain claims process (e.g. the
+    /// business proving ownership through some other channel), rather than
+    /// silently vanishing back into an address nobody can move funds out of.
+    pub fn emergency_recover_campaign(
+        env: Env,
+        admin: Address,
+        campaign_id: CampaignId,
+    ) -> Result<(), Error> {
+        require_not_paused(&env)?;
+        require_admin(&env, &admin)?;
+
+        let mut campaign = storage::get_campaign(&env, campaign_id)?;
+        if campaign.status == CampaignStatus::Cancelled
+            || campaign.status == CampaignStatus::Completed
+        {
+            return Err(Error::InvalidStatus);
+        }
+        let grace_period_end = campaign
+            .completion_deadline
+            .checked_add(EMERGENCY_RECOVERY_GRACE_PERIOD)
+            .ok_or(Error::InvalidAmount)?;
+        if env.ledger().timestamp() <= grace_period_end {
+            return Err(Error::DeadlineNotReached);
+        }
+
+        let token = token::Client::new(&env, &campaign.asset.token);
+        let contract = env.current_contract_address();
+        // Only the unallocated balance is recoverable; committed payouts stay
+        // reserved for approved creators who can still `claim_payment`.
+        let recovered = campaign
+            .escrow_balance
+            .checked_sub(campaign.committed_payouts)
+            .ok_or(Error::InvalidAmount)?;
+        if recovered > 0 {
+            token.transfer(&contract, &storage::get_treasury(&env)?, &recovered);
+        }
+        // Leave `committed_payouts` intact so approved-but-unpaid creators can
+        // still claim their payouts afterward.
+        campaign.escrow_balance = campaign.committed_payouts;
+        campaign.status = CampaignStatus::Cancelled;
+        storage::set_campaign(&env, &campaign);
+        events::EmergencyRecovery {
+            campaign_id,
+            amount: recovered,
         }
         .publish(&env);
         Ok(())
