@@ -1607,8 +1607,8 @@ mod test_resolve_dispute {
 mod test_freeze_for_dispute {
     use super::test_helpers::*;
     use crate::{CampaignEscrowContractClient, Error};
-    use soroban_sdk::testutils::{Address as _, MockAuth, MockAuthInvoke};
-    use soroban_sdk::{Address, IntoVal, String};
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{Address, String};
 
     /// Take a creator all the way to a business-approved, immediately
     /// claimable submission on a freshly funded campaign.
@@ -1630,12 +1630,12 @@ mod test_freeze_for_dispute {
     #[test]
     fn freeze_marks_application_and_blocks_claim() {
         let (env, contract_id) = setup_env();
-        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+        let (client, _admin, dispute, business, token) = bootstrap(&env, &contract_id, 50);
         let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
         let creator = payable_application(&env, &client, &business, id, 1_000_000);
 
         assert!(!client.get_application(&id, &creator).frozen);
-        client.freeze_for_dispute(&id, &creator);
+        client.freeze_for_dispute(&dispute, &id, &creator);
         assert!(client.get_application(&id, &creator).frozen);
 
         let result = client.try_claim_payment(&creator, &id);
@@ -1645,14 +1645,14 @@ mod test_freeze_for_dispute {
     #[test]
     fn freeze_blocks_claim_after_auto_approval_deadline() {
         let (env, contract_id) = setup_env();
-        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+        let (client, _admin, dispute, business, token) = bootstrap(&env, &contract_id, 50);
         let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
 
         let creator = Address::generate(&env);
         client.apply_to_campaign(&creator, &id, &String::from_str(&env, "pitch"));
         client.approve_creator(&business, &id, &creator, &1_000_000);
         client.submit_proof(&creator, &id, &String::from_str(&env, "proof"));
-        client.freeze_for_dispute(&id, &creator);
+        client.freeze_for_dispute(&dispute, &id, &creator);
 
         // Past the content deadline the creator would otherwise be
         // auto-approved — this is the case a business raises a dispute for.
@@ -1664,14 +1664,14 @@ mod test_freeze_for_dispute {
     #[test]
     fn freeze_preserves_proof_against_business_edits() {
         let (env, contract_id) = setup_env();
-        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+        let (client, _admin, dispute, business, token) = bootstrap(&env, &contract_id, 50);
         let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
 
         let creator = Address::generate(&env);
         client.apply_to_campaign(&creator, &id, &String::from_str(&env, "pitch"));
         client.approve_creator(&business, &id, &creator, &1_000_000);
         client.submit_proof(&creator, &id, &String::from_str(&env, "proof"));
-        client.freeze_for_dispute(&id, &creator);
+        client.freeze_for_dispute(&dispute, &id, &creator);
 
         assert_eq!(
             client.try_reject_submission(&business, &id, &creator),
@@ -1694,12 +1694,12 @@ mod test_freeze_for_dispute {
     #[test]
     fn freeze_leaves_other_creators_claimable() {
         let (env, contract_id) = setup_env();
-        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+        let (client, _admin, dispute, business, token) = bootstrap(&env, &contract_id, 50);
         let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
         let disputed = payable_application(&env, &client, &business, id, 1_000_000);
         let uncontested = payable_application(&env, &client, &business, id, 1_000_000);
 
-        client.freeze_for_dispute(&id, &disputed);
+        client.freeze_for_dispute(&dispute, &id, &disputed);
 
         client.claim_payment(&uncontested, &id);
         assert_eq!(
@@ -1711,94 +1711,101 @@ mod test_freeze_for_dispute {
     #[test]
     fn freeze_rejects_already_paid_application() {
         let (env, contract_id) = setup_env();
-        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+        let (client, _admin, dispute, business, token) = bootstrap(&env, &contract_id, 50);
         let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
         let creator = payable_application(&env, &client, &business, id, 1_000_000);
         client.claim_payment(&creator, &id);
 
-        let result = client.try_freeze_for_dispute(&id, &creator);
+        let result = client.try_freeze_for_dispute(&dispute, &id, &creator);
         assert_eq!(result, Err(Ok(Error::SubmissionNotPayable)));
     }
 
     #[test]
     fn freeze_rejects_creator_with_no_application() {
         let (env, contract_id) = setup_env();
-        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+        let (client, _admin, dispute, business, token) = bootstrap(&env, &contract_id, 50);
         let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
 
         let stranger = Address::generate(&env);
-        let result = client.try_freeze_for_dispute(&id, &stranger);
+        let result = client.try_freeze_for_dispute(&dispute, &id, &stranger);
         assert_eq!(result, Err(Ok(Error::ApplicationNotFound)));
     }
 
     #[test]
     fn freeze_rejects_unapproved_applicant() {
         let (env, contract_id) = setup_env();
-        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+        let (client, _admin, dispute, business, token) = bootstrap(&env, &contract_id, 50);
         let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
 
         // Applied but never approved, so no payout is committed to freeze.
         let creator = Address::generate(&env);
         client.apply_to_campaign(&creator, &id, &String::from_str(&env, "pitch"));
 
-        let result = client.try_freeze_for_dispute(&id, &creator);
+        let result = client.try_freeze_for_dispute(&dispute, &id, &creator);
         assert_eq!(result, Err(Ok(Error::SubmissionNotPayable)));
     }
 
     #[test]
     fn freeze_twice_fails() {
         let (env, contract_id) = setup_env();
-        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+        let (client, _admin, dispute, business, token) = bootstrap(&env, &contract_id, 50);
         let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
         let creator = payable_application(&env, &client, &business, id, 1_000_000);
 
-        client.freeze_for_dispute(&id, &creator);
-        let result = client.try_freeze_for_dispute(&id, &creator);
+        client.freeze_for_dispute(&dispute, &id, &creator);
+        let result = client.try_freeze_for_dispute(&dispute, &id, &creator);
         assert_eq!(result, Err(Ok(Error::PayoutFrozen)));
     }
 
     #[test]
     fn freeze_rejects_cancelled_campaign() {
         let (env, contract_id) = setup_env();
-        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+        let (client, _admin, dispute, business, token) = bootstrap(&env, &contract_id, 50);
         let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
         let creator = payable_application(&env, &client, &business, id, 1_000_000);
         client.cancel_campaign(&business, &id);
 
-        let result = client.try_freeze_for_dispute(&id, &creator);
+        let result = client.try_freeze_for_dispute(&dispute, &id, &creator);
         assert_eq!(result, Err(Ok(Error::InvalidStatus)));
     }
 
     #[test]
-    fn freeze_requires_dispute_contract_auth() {
+    fn freeze_rejects_uninvolved_stranger() {
         let (env, contract_id) = setup_env();
         let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
         let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
         let creator = payable_application(&env, &client, &business, id, 1_000_000);
 
-        // Authorize somebody who is not the configured dispute contract.
+        // Not the configured dispute contract and not the admin.
         let stranger = Address::generate(&env);
-        env.mock_auths(&[MockAuth {
-            address: &stranger,
-            invoke: &MockAuthInvoke {
-                contract: &contract_id,
-                fn_name: "freeze_for_dispute",
-                args: (id, creator.clone()).into_val(&env),
-                sub_invokes: &[],
-            },
-        }]);
-
-        assert!(client.try_freeze_for_dispute(&id, &creator).is_err());
+        let result = client.try_freeze_for_dispute(&stranger, &id, &creator);
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
         assert!(!client.get_application(&id, &creator).frozen);
+    }
+
+    #[test]
+    fn admin_can_freeze_directly() {
+        let (env, contract_id) = setup_env();
+        let (client, admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+        let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
+        let creator = payable_application(&env, &client, &business, id, 1_000_000);
+
+        // Admin can freeze directly, without routing through the
+        // dispute-resolution contract's `raise_dispute`.
+        client.freeze_for_dispute(&admin, &id, &creator);
+        assert!(client.get_application(&id, &creator).frozen);
+
+        let result = client.try_claim_payment(&creator, &id);
+        assert_eq!(result, Err(Ok(Error::PayoutFrozen)));
     }
 
     #[test]
     fn admin_resolve_dispute_settles_and_clears_freeze() {
         let (env, contract_id) = setup_env();
-        let (client, admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+        let (client, admin, dispute, business, token) = bootstrap(&env, &contract_id, 50);
         let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
         let creator = payable_application(&env, &client, &business, id, 1_000_000);
-        client.freeze_for_dispute(&id, &creator);
+        client.freeze_for_dispute(&dispute, &id, &creator);
 
         client.resolve_dispute(&admin, &id, &creator, &crate::DisputeResolution::PayCreator);
 
@@ -1808,5 +1815,11 @@ mod test_freeze_for_dispute {
             application.status,
             ads_bazaar_shared::ApplicationStatus::Paid
         );
+
+        // Settling clears the freeze, but the application is now Paid, so a
+        // subsequent claim attempt still fails — just via the ordinary
+        // already-Paid guard, not `PayoutFrozen`.
+        let result = client.try_claim_payment(&creator, &id);
+        assert_eq!(result, Err(Ok(Error::SubmissionNotPayable)));
     }
 }

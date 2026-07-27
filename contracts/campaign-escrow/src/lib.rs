@@ -675,8 +675,11 @@ impl CampaignEscrowContract {
     }
 
     /// Freeze one creator's escrowed payout so it cannot be claimed while a
-    /// dispute is under review. Callable only by the trusted
-    /// `dispute-resolution` contract set at `initialize`.
+    /// dispute is under review. Callable by the trusted `dispute-resolution`
+    /// contract set at `initialize` (the normal path, reached via
+    /// `raise_dispute`), or directly by `admin` — matching `resolve_dispute`'s
+    /// auth model — so an emergency freeze doesn't require routing through
+    /// the dispute-resolution contract.
     ///
     /// The freeze is scoped to a single application, not the whole campaign —
     /// a dispute with one creator must not stall payouts to every other
@@ -693,13 +696,15 @@ impl CampaignEscrowContract {
     /// it settles, otherwise a resolved application stays locked forever.
     pub fn freeze_for_dispute(
         env: Env,
+        caller: Address,
         campaign_id: CampaignId,
         creator: Address,
     ) -> Result<(), Error> {
         require_not_paused(&env)?;
-        // Satisfied implicitly when the dispute contract is the direct
-        // invoker, so no separate caller argument is needed.
-        storage::get_dispute_contract(&env)?.require_auth();
+        caller.require_auth();
+        if caller != storage::get_dispute_contract(&env)? && caller != storage::get_admin(&env)? {
+            return Err(Error::Unauthorized);
+        }
 
         let campaign = storage::get_campaign(&env, campaign_id)?;
         if campaign.status == CampaignStatus::Cancelled {
