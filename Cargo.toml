@@ -16,6 +16,7 @@ repository = "https://github.com/ads-bazaar/ads-bazaar-contract"
 soroban-sdk = "27.0.0"
 ads-bazaar-shared = { path = "contracts/shared" }
 ads-bazaar-campaign-escrow = { path = "contracts/campaign-escrow" }
+ads-bazaar-dispute-resolution = { path = "contracts/dispute-resolution" }
 
 [profile.release]
 opt-level = "z"
