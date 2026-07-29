@@ -19,3 +19,7 @@ ads-bazaar-shared = { workspace = true }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
+# Dev-only: registers the real dispute-resolution contract in integration tests
+# to exercise cross-contract call semantics. Never add to [dependencies] —
+# that would link dispute-resolution's exports into the escrow wasm.
+ads-bazaar-dispute-resolution = { workspace = true, features = ["testutils"] }

@@ -6,6 +6,7 @@ version = 4
 name = "ads-bazaar-campaign-escrow"
 version = "0.1.0"
 dependencies = [
+ "ads-bazaar-dispute-resolution",
  "ads-bazaar-shared",
  "soroban-sdk",
 ]
