@@ -164,14 +164,8 @@ impl Fixture {
 fn both_contracts_initialize_pointing_at_each_other() {
     let f = Fixture::setup();
 
-    assert_eq!(
-        f.escrow().version(),
-        String::from_str(&f.env, "0.1.0")
-    );
-    assert_eq!(
-        f.disputes().version(),
-        String::from_str(&f.env, "0.1.0")
-    );
+    assert_eq!(f.escrow().version(), String::from_str(&f.env, "0.1.0"));
+    assert_eq!(f.disputes().version(), String::from_str(&f.env, "0.1.0"));
 
     let cfg = f.escrow().get_protocol_config();
     assert_eq!(cfg.fee_bps, FEE_BPS);
@@ -208,7 +202,8 @@ fn frozen_payout_cannot_be_claimed() {
     let f = Fixture::setup();
     let campaign_id = f.create_funded_campaign();
     let creator = f.add_creator_with_proof(campaign_id);
-    f.escrow().approve_submission(&f.business, &campaign_id, &creator);
+    f.escrow()
+        .approve_submission(&f.business, &campaign_id, &creator);
 
     f.disputes().raise_dispute(
         &creator,
@@ -370,9 +365,9 @@ fn raise_then_admin_resolve_split_distributes_proportionally() {
     );
 
     let creator_gross = PAYOUT * 6_000 / 10_000; // 1_200_000
-    let business_share = PAYOUT - creator_gross;  // 800_000
-    let fee = creator_gross * FEE_BPS / 10_000;   // 60_000
-    let creator_net = creator_gross - fee;        // 1_140_000
+    let business_share = PAYOUT - creator_gross; // 800_000
+    let fee = creator_gross * FEE_BPS / 10_000; // 60_000
+    let creator_net = creator_gross - fee; // 1_140_000
 
     assert_eq!(tc.balance(&creator), creator_before + creator_net);
     assert_eq!(tc.balance(&f.business), business_before + business_share);
@@ -422,7 +417,8 @@ fn other_creators_payout_unaffected_while_one_is_disputed() {
     let campaign_id = f.create_funded_campaign();
     let disputed = f.add_creator_with_proof(campaign_id);
     let clean = f.add_creator_with_proof(campaign_id);
-    f.escrow().approve_submission(&f.business, &campaign_id, &clean);
+    f.escrow()
+        .approve_submission(&f.business, &campaign_id, &clean);
 
     f.disputes().raise_dispute(
         &disputed,
@@ -470,7 +466,8 @@ fn raise_dispute_on_paid_payout_is_rejected_and_leaves_no_record() {
     let f = Fixture::setup();
     let campaign_id = f.create_funded_campaign();
     let creator = f.add_creator_with_proof(campaign_id);
-    f.escrow().approve_submission(&f.business, &campaign_id, &creator);
+    f.escrow()
+        .approve_submission(&f.business, &campaign_id, &creator);
     f.escrow().claim_payment(&creator, &campaign_id);
 
     assert_eq!(
