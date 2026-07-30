@@ -37,6 +37,7 @@ mod test_helpers {
     pub struct Fixture<'a> {
         pub escrow: CampaignEscrowContractClient<'a>,
         pub disputes: DisputeResolutionContractClient<'a>,
+        pub admin: Address,
         pub business: Address,
         pub creator: Address,
         pub campaign_id: u64,
@@ -92,6 +93,7 @@ mod test_helpers {
         let fixture = Fixture {
             escrow,
             disputes,
+            admin,
             business,
             creator: Address::generate(env),
             campaign_id,
@@ -390,5 +392,87 @@ mod test_raise_dispute {
                 .status,
             ads_bazaar_shared::ApplicationStatus::Paid
         );
+    }
+}
+
+mod test_assign_arbiter {
+    use super::test_helpers::*;
+    use crate::Error;
+    use ads_bazaar_shared::DisputeStatus;
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{Address, String};
+
+    #[test]
+    fn happy_path_sets_arbiter_and_transitions_to_under_review() {
+        let (env, escrow_id, dispute_id) = setup_env();
+        let f = bootstrap(&env, &escrow_id, &dispute_id);
+        let id = f.disputes.raise_dispute(
+            &f.creator,
+            &f.campaign_id,
+            &f.creator,
+            &String::from_str(&env, "ipfs://evidence"),
+        );
+        let arbiter = Address::generate(&env);
+
+        f.disputes.assign_arbiter(&f.admin, &id, &arbiter);
+
+        let dispute = f.disputes.get_dispute(&id);
+        assert_eq!(dispute.arbiter, Some(arbiter));
+        assert_eq!(dispute.status, DisputeStatus::UnderReview);
+    }
+
+    #[test]
+    fn non_admin_caller_is_rejected() {
+        let (env, escrow_id, dispute_id) = setup_env();
+        let f = bootstrap(&env, &escrow_id, &dispute_id);
+        let id = f.disputes.raise_dispute(
+            &f.creator,
+            &f.campaign_id,
+            &f.creator,
+            &String::from_str(&env, "ipfs://evidence"),
+        );
+        let not_admin = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+
+        let result = f.disputes.try_assign_arbiter(&not_admin, &id, &arbiter);
+
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
+        // Rejected assignment must not have touched the dispute.
+        assert_eq!(f.disputes.get_dispute(&id).status, DisputeStatus::Raised);
+        assert_eq!(f.disputes.get_dispute(&id).arbiter, None);
+    }
+
+    #[test]
+    fn double_assignment_is_rejected() {
+        let (env, escrow_id, dispute_id) = setup_env();
+        let f = bootstrap(&env, &escrow_id, &dispute_id);
+        let id = f.disputes.raise_dispute(
+            &f.creator,
+            &f.campaign_id,
+            &f.creator,
+            &String::from_str(&env, "ipfs://evidence"),
+        );
+        let first_arbiter = Address::generate(&env);
+        let second_arbiter = Address::generate(&env);
+        f.disputes.assign_arbiter(&f.admin, &id, &first_arbiter);
+
+        let result = f
+            .disputes
+            .try_assign_arbiter(&f.admin, &id, &second_arbiter);
+
+        assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+        // The original assignment must be untouched by the rejected retry.
+        assert_eq!(f.disputes.get_dispute(&id).arbiter, Some(first_arbiter));
+    }
+
+    #[test]
+    fn assigning_to_nonexistent_dispute_returns_dispute_not_found() {
+        let (env, escrow_id, dispute_id) = setup_env();
+        let f = bootstrap(&env, &escrow_id, &dispute_id);
+        let arbiter = Address::generate(&env);
+
+        let result = f.disputes.try_assign_arbiter(&f.admin, &999, &arbiter);
+
+        assert_eq!(result, Err(Ok(Error::DisputeNotFound)));
     }
 }

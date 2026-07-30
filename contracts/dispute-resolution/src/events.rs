@@ -18,6 +18,15 @@ pub struct DisputeRaised {
 
 #[contractevent]
 #[derive(Clone, Debug)]
+pub struct ArbiterAssigned {
+    #[topic]
+    pub dispute_id: DisputeId,
+    #[topic]
+    pub arbiter: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
 pub struct DisputeResolved {
     #[topic]
     pub dispute_id: DisputeId,
