@@ -26,6 +26,18 @@ use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String};
 /// below.
 const INITIAL_VERSION: &str = "0.1.0";
 
+/// Require that `admin` matches the address stored at `initialize` time.
+/// Returns `Error::Unauthorized` for any other caller. Mirrors
+/// `campaign-escrow`'s helper of the same name.
+fn require_admin(env: &Env, admin: &Address) -> Result<(), Error> {
+    admin.require_auth();
+    let stored_admin = storage::get_admin(env)?;
+    if stored_admin != *admin {
+        return Err(Error::Unauthorized);
+    }
+    Ok(())
+}
+
 #[contract]
 pub struct DisputeResolutionContract;
 
@@ -122,16 +134,32 @@ impl DisputeResolutionContract {
 
     /// Assign an arbiter to review a raised dispute.
     ///
-    /// TODO(contributors): implement once the arbitration model is decided.
-    #[allow(unused_variables)]
+    /// Only valid from `DisputeStatus::Raised` — a dispute already
+    /// `UnderReview` (an arbiter assigned) or `Resolved` cannot be
+    /// reassigned through this call.
     pub fn assign_arbiter(
         env: Env,
         admin: Address,
         dispute_id: DisputeId,
         arbiter: Address,
     ) -> Result<(), Error> {
-        admin.require_auth();
-        todo!("design + implement arbiter assignment — see doc comment above")
+        require_admin(&env, &admin)?;
+
+        let mut dispute = storage::get_dispute(&env, dispute_id)?;
+        if dispute.status != DisputeStatus::Raised {
+            return Err(Error::InvalidStatus);
+        }
+
+        dispute.arbiter = Some(arbiter.clone());
+        dispute.status = DisputeStatus::UnderReview;
+        storage::set_dispute(&env, dispute_id, &dispute);
+
+        events::ArbiterAssigned {
+            dispute_id,
+            arbiter,
+        }
+        .publish(&env);
+        Ok(())
     }
 
     /// Arbiter resolves a dispute with a final outcome, then calls back
@@ -168,11 +196,7 @@ impl DisputeResolutionContract {
     /// whether `upgrade` should take a new version string to persist, or
     /// whether version tracking should be derived from the wasm hash instead.
     pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
-        admin.require_auth();
-        let stored_admin = storage::get_admin(&env)?;
-        if admin != stored_admin {
-            return Err(Error::Unauthorized);
-        }
+        require_admin(&env, &admin)?;
 
         env.deployer()
             .update_current_contract_wasm(new_wasm_hash.clone());
