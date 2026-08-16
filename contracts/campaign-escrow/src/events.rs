@@ -83,6 +83,14 @@ pub struct CampaignCancelled {
 
 #[contractevent]
 #[derive(Clone, Debug)]
+pub struct CampaignExpired {
+    #[topic]
+    pub campaign_id: CampaignId,
+    pub refunded_amount: i128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
 pub struct SurplusReclaimed {
     #[topic]
     pub campaign_id: CampaignId,

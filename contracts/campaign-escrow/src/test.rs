@@ -1928,3 +1928,46 @@ mod test_freeze_for_dispute {
         assert_eq!(result, Err(Ok(Error::SubmissionNotPayable)));
     }
 }
+
+mod test_expire_event {
+    use super::test_helpers::*;
+    use soroban_sdk::testutils::Events as _;
+    use soroban_sdk::{Env, Address};
+
+    #[test]
+    fn test_campaign_expired_event() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+
+        let budget: i128 = 10_000_000;
+        let id = create_funded_campaign(&env, &client, &business, &token, budget, 5);
+
+        let c1 = Address::generate(&env);
+        let c2 = Address::generate(&env);
+        // Two creators are selected (committing 1_000_000 each)
+        for c in [&c1, &c2] {
+            client.apply_to_campaign(c, &id, &soroban_sdk::String::from_str(&env, "pitch"));
+            client.approve_creator(&business, &id, c, &1_000_000);
+        }
+
+        // Advance past the content deadline.
+        advance_time(&env, 604_800 + 10);
+
+        // Verify CampaignExpired event is emitted
+        let events = env.events().all();
+        assert!(events.iter().any(|e| {
+            e.event
+                .contract_id
+                == contract_id
+                && e.event.event_data
+                    .clone()
+                    .into_xdr()
+                    .unwrap()
+                    .as_bytes()
+                    .starts_with(&hex::encode(&env.events().abi_encode(&crate::events::CampaignExpired {
+                        campaign_id: id,
+                        refunded_amount: 0, // No unallocated balance
+                    })))
+        }), "Expected CampaignExpired event to be emitted");
+    }
+}
