@@ -370,7 +370,11 @@ impl CampaignEscrowContract {
         if campaign.approved_count >= campaign.max_creators {
             return Err(Error::MaxCreatorsReached);
         }
-        if campaign.committed_payouts + payout_amount > campaign.escrow_balance {
+        let new_committed = campaign
+            .committed_payouts
+            .checked_add(payout_amount)
+            .ok_or(Error::InvalidAmount)?;
+        if new_committed > campaign.escrow_balance {
             return Err(Error::InsufficientEscrowBalance);
         }
 
@@ -379,7 +383,7 @@ impl CampaignEscrowContract {
         storage::set_application(&env, &application);
 
         campaign.approved_count += 1;
-        campaign.committed_payouts += payout_amount;
+        campaign.committed_payouts = new_committed;
         if campaign.status == CampaignStatus::Funded {
             campaign.status = CampaignStatus::Active;
         }
@@ -528,8 +532,14 @@ impl CampaignEscrowContract {
         application.status = ApplicationStatus::Paid;
         storage::set_application(&env, &application);
 
-        campaign.escrow_balance -= application.payout_amount;
-        campaign.committed_payouts -= application.payout_amount;
+        campaign.escrow_balance = campaign
+            .escrow_balance
+            .checked_sub(application.payout_amount)
+            .ok_or(Error::InvalidAmount)?;
+        campaign.committed_payouts = campaign
+            .committed_payouts
+            .checked_sub(application.payout_amount)
+            .ok_or(Error::InvalidAmount)?;
         if campaign.escrow_balance == 0 {
             campaign.status = CampaignStatus::Completed;
         }
@@ -905,8 +915,14 @@ impl CampaignEscrowContract {
         application.frozen = false;
         storage::set_application(&env, &application);
 
-        campaign.escrow_balance -= payout_amount;
-        campaign.committed_payouts -= payout_amount;
+        campaign.escrow_balance = campaign
+            .escrow_balance
+            .checked_sub(payout_amount)
+            .ok_or(Error::InvalidAmount)?;
+        campaign.committed_payouts = campaign
+            .committed_payouts
+            .checked_sub(payout_amount)
+            .ok_or(Error::InvalidAmount)?;
         if campaign.escrow_balance == 0 {
             campaign.status = CampaignStatus::Completed;
         }
