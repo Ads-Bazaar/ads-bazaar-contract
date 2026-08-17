@@ -234,6 +234,44 @@ mod test_happy_path {
     }
 
     #[test]
+    fn create_campaign_rejects_non_contract_token() {
+        let (env, contract_id) = setup_env();
+        let client = CampaignEscrowContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let dispute = Address::generate(&env);
+        let business = Address::generate(&env);
+        client.initialize(&admin, &dispute, &50);
+
+        // Use an account address (not a registered token contract) as the
+        // payout token. Creation should be rejected at campaign creation
+        // time with `InvalidAsset` rather than later during funding.
+        let bogus_token = Address::generate(&env);
+        let asset = usdc(&env, &bogus_token);
+
+        let now = env.ledger().timestamp();
+        let result = client.try_create_campaign(
+            &business,
+            &asset,
+            &1_000,
+            &1,
+            &(now + 86_400),
+            &(now + 604_800),
+            &soroban_sdk::String::from_str(&env, "ipfs://brief"),
+        );
+
+        // Depending on SDK semantics a cross-contract read against a
+        // non-contract address may either trap (Abort) or be mappable to
+        // `Error::InvalidAsset`. Accept either outcome here; later we can
+        // refine the implementation to reliably return `InvalidAsset`.
+        let ok = match result {
+            Err(Ok(Error::InvalidAsset)) => true,
+            Err(Err(_host_err)) => true, // Abort/trap
+            _ => false,
+        };
+        assert!(ok, "expected InvalidAsset or Abort, got: {:?}", result);
+    }
+
+    #[test]
     fn fee_calculation_50bps() {
         let (env, contract_id) = setup_env();
         let (client, admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);

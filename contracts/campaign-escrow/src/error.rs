@@ -1,5 +1,6 @@
 use soroban_sdk::contracterror;
 
+
 /// Errors returned by the campaign-escrow contract.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -48,4 +49,7 @@ pub enum Error {
     /// The application is frozen pending dispute arbitration, so it can
     /// neither be paid out nor have its proof state changed.
     PayoutFrozen = 25,
+    /// The provided payout asset refers to an address that is not a
+    /// responsive/valid SEP-41 token contract.
+    InvalidAsset = 26,
 }

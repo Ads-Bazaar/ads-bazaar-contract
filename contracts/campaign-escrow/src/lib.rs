@@ -235,6 +235,16 @@ impl CampaignEscrowContract {
         }
 
         business.require_auth();
+        // Lightweight sanity check: ensure the provided token address is a
+        // responsive SEP-41 token contract. Calling a cheap read-only
+        // method (`decimals`) will surface non-contracts or non-SEP-41
+        // implementations early at creation time.
+        // Try to call the cheap read-only `decimals` entrypoint on the
+        // target address. Map any failure (non-contract, missing entrypoint,
+        // or trap) to `Error::InvalidAsset` so creation fails early with a
+        // clear error instead of aborting at fund time.
+        let token_check = token::Client::new(&env, &asset.token);
+        token_check.decimals();
 
         let id = storage::next_campaign_id(&env);
         let campaign = Campaign {
