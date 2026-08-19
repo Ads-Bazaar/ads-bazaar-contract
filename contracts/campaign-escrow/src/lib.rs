@@ -36,6 +36,28 @@ const INITIAL_VERSION: &str = "0.1.0";
 /// `expire_campaign`.
 const EMERGENCY_RECOVERY_GRACE_PERIOD: u64 = 180 * 24 * 60 * 60; // ~6 months
 
+/// Minimum time that must elapse between a dispute being opened over an
+/// application (`freeze_for_dispute`, which emits `events::DisputeFrozen`)
+/// and `admin` being able to settle it via `resolve_dispute`.
+///
+/// `resolve_dispute` moves a creator's committed payout in any direction the
+/// admin chooses, so without a delay a compromised admin key could reallocate
+/// a disputed payout in the same block the dispute is raised — before the
+/// other party could submit counter-evidence, or even notice. This window is
+/// the guarantee that they get a chance to.
+///
+/// 72 hours is chosen to span a full weekend in any timezone: the shortest
+/// period in which a business or creator who is simply not at their desk can
+/// still see the `DisputeFrozen` event and respond. Longer would strand
+/// legitimately contested funds (campaigns operate on a days-to-weeks scale —
+/// contrast `EMERGENCY_RECOVERY_GRACE_PERIOD`, which is months-scale because
+/// it only ever applies to abandoned campaigns); shorter would let a dispute
+/// opened Friday evening be resolved unilaterally before Monday.
+///
+/// Public so integrators and the frontend can show a countdown to when a
+/// dispute becomes resolvable, rather than hardcoding a duplicate constant.
+pub const MIN_EVIDENCE_WINDOW: u64 = 72 * 60 * 60; // 72 hours
+
 /// Require that `admin` matches the address stored at `initialize` time.
 /// Returns `Error::Unauthorized` for any other caller. Used by `pause` and
 /// `unpause`.
@@ -358,6 +380,7 @@ impl CampaignEscrowContract {
             payout_amount: 0,
             proof_approved: false,
             frozen: false,
+            dispute_opened_at: None,
             status: ApplicationStatus::Pending,
         };
         storage::set_application(&env, &application);
@@ -401,7 +424,11 @@ impl CampaignEscrowContract {
         if campaign.approved_count >= campaign.max_creators {
             return Err(Error::MaxCreatorsReached);
         }
-        if campaign.committed_payouts + payout_amount > campaign.escrow_balance {
+        let new_committed = campaign
+            .committed_payouts
+            .checked_add(payout_amount)
+            .ok_or(Error::InvalidAmount)?;
+        if new_committed > campaign.escrow_balance {
             return Err(Error::InsufficientEscrowBalance);
         }
 
@@ -410,7 +437,7 @@ impl CampaignEscrowContract {
         storage::set_application(&env, &application);
 
         campaign.approved_count += 1;
-        campaign.committed_payouts += payout_amount;
+        campaign.committed_payouts = new_committed;
         if campaign.status == CampaignStatus::Funded {
             campaign.status = CampaignStatus::Active;
         }
@@ -559,8 +586,14 @@ impl CampaignEscrowContract {
         application.status = ApplicationStatus::Paid;
         storage::set_application(&env, &application);
 
-        campaign.escrow_balance -= application.payout_amount;
-        campaign.committed_payouts -= application.payout_amount;
+        campaign.escrow_balance = campaign
+            .escrow_balance
+            .checked_sub(application.payout_amount)
+            .ok_or(Error::InvalidAmount)?;
+        campaign.committed_payouts = campaign
+            .committed_payouts
+            .checked_sub(application.payout_amount)
+            .ok_or(Error::InvalidAmount)?;
         if campaign.escrow_balance == 0 {
             campaign.status = CampaignStatus::Completed;
         }
@@ -772,7 +805,7 @@ impl CampaignEscrowContract {
         // Leave `committed_payouts` intact so approved-but-unpaid creators can
         // still claim their payouts afterward.
         campaign.escrow_balance = campaign.committed_payouts;
-        if campaign.status != CampaignStatus::Completed {
+        if campaign.escrow_balance == 0 {
             campaign.status = CampaignStatus::Completed;
         }
         storage::set_campaign(&env, &campaign);
@@ -802,8 +835,14 @@ impl CampaignEscrowContract {
     /// already been paid. That is deliberately the *only* time bound on
     /// raising a dispute — see `dispute-resolution::raise_dispute`.
     ///
-    /// TODO(contributors): `resolve_dispute_payout` must clear `frozen` when
-    /// it settles, otherwise a resolved application stays locked forever.
+    /// Freezing also stamps `Application::dispute_opened_at`, which starts
+    /// the `MIN_EVIDENCE_WINDOW` that `resolve_dispute` will not settle
+    /// before. `require_not_frozen` below rejects a second freeze over an
+    /// already-frozen payout, so that clock cannot be reset by re-freezing.
+    ///
+    /// TODO(contributors): `resolve_dispute_payout` must clear `frozen` and
+    /// `dispute_opened_at` when it settles, otherwise a resolved application
+    /// stays locked forever.
     pub fn freeze_for_dispute(
         env: Env,
         caller: Address,
@@ -828,6 +867,7 @@ impl CampaignEscrowContract {
         }
 
         application.frozen = true;
+        application.dispute_opened_at = Some(env.ledger().timestamp());
         storage::set_application(&env, &application);
         events::DisputeFrozen {
             campaign_id,
@@ -871,8 +911,21 @@ impl CampaignEscrowContract {
     /// Requires an application with a nonzero `payout_amount` that hasn't
     /// already been paid — i.e. one that was approved via `approve_creator`
     /// at some point, regardless of its current `Approved` / `ProofSubmitted`
-    /// / `Rejected` state. Moves funds immediately per `resolution` (see
+    /// / `Rejected` state. Moves funds per `resolution` (see
     /// `DisputeResolution`) and marks the application `Paid`.
+    ///
+    /// Settling is gated on there being a dispute to settle, and on that
+    /// dispute having been open long enough for the other side to answer it:
+    ///
+    /// - The application must have been frozen by `freeze_for_dispute`
+    ///   (`Error::NoDisputeOpen` otherwise). Admin can call that themselves,
+    ///   so this is not a dependency on the `dispute-resolution` contract —
+    ///   but it does mean every admin settlement is preceded by a public
+    ///   `events::DisputeFrozen`, which is what gives the counterparty
+    ///   something to notice.
+    /// - At least `MIN_EVIDENCE_WINDOW` must have elapsed since that freeze
+    ///   (`Error::EvidenceWindowOpen` otherwise), so neither party's payout
+    ///   can be reallocated out from under them without warning.
     pub fn resolve_dispute(
         env: Env,
         admin: Address,
@@ -893,6 +946,16 @@ impl CampaignEscrowContract {
         let mut application = storage::get_application(&env, campaign_id, &creator)?;
         if application.status == ApplicationStatus::Paid || application.payout_amount <= 0 {
             return Err(Error::SubmissionNotPayable);
+        }
+
+        // A payout can only be reallocated if it is actually contested, and
+        // only once the evidence window on that dispute has run out.
+        let dispute_opened_at = application.dispute_opened_at.ok_or(Error::NoDisputeOpen)?;
+        let window_end = dispute_opened_at
+            .checked_add(MIN_EVIDENCE_WINDOW)
+            .ok_or(Error::InvalidAmount)?;
+        if window_end > env.ledger().timestamp() {
+            return Err(Error::EvidenceWindowOpen);
         }
 
         let payout_amount = application.payout_amount;
@@ -931,13 +994,20 @@ impl CampaignEscrowContract {
         }
 
         application.status = ApplicationStatus::Paid;
-        // Settling here overrides any arbiter freeze, so drop it rather than
-        // leaving a paid application marked frozen.
+        // The dispute is settled, so drop both the freeze and the window
+        // clock rather than leaving a paid application marked contested.
         application.frozen = false;
+        application.dispute_opened_at = None;
         storage::set_application(&env, &application);
 
-        campaign.escrow_balance -= payout_amount;
-        campaign.committed_payouts -= payout_amount;
+        campaign.escrow_balance = campaign
+            .escrow_balance
+            .checked_sub(payout_amount)
+            .ok_or(Error::InvalidAmount)?;
+        campaign.committed_payouts = campaign
+            .committed_payouts
+            .checked_sub(payout_amount)
+            .ok_or(Error::InvalidAmount)?;
         if campaign.escrow_balance == 0 {
             campaign.status = CampaignStatus::Completed;
         }

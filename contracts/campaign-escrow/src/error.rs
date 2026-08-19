@@ -52,4 +52,13 @@ pub enum Error {
     /// The provided payout asset refers to an address that is not a
     /// responsive/valid SEP-41 token contract.
     InvalidAsset = 26,
+    /// `resolve_dispute` was called before `MIN_EVIDENCE_WINDOW` had elapsed
+    /// since the dispute was opened by `freeze_for_dispute`. The other party
+    /// still has time to submit counter-evidence.
+    EvidenceWindowOpen = 26,
+    /// `resolve_dispute` was called on an application that has no open
+    /// dispute — nothing has been frozen for it via `freeze_for_dispute`, so
+    /// there is no contested payout to settle and no evidence window to
+    /// measure from.
+    NoDisputeOpen = 27,
 }
