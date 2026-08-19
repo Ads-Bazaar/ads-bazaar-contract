@@ -722,22 +722,23 @@ impl CampaignEscrowContract {
             return Err(Error::DeadlineNotReached);
         }
 
-        let token = token::Client::new(&env, &campaign.asset.token);
-        let contract = env.current_contract_address();
         // Only the unallocated balance is recoverable; committed payouts stay
         // reserved for approved creators who can still `claim_payment`.
         let recovered = campaign
             .escrow_balance
             .checked_sub(campaign.committed_payouts)
             .ok_or(Error::InvalidAmount)?;
-        if recovered > 0 {
-            token.transfer(&contract, &storage::get_treasury(&env)?, &recovered);
-        }
         // Leave `committed_payouts` intact so approved-but-unpaid creators can
         // still claim their payouts afterward.
         campaign.escrow_balance = campaign.committed_payouts;
         campaign.status = CampaignStatus::Cancelled;
         storage::set_campaign(&env, &campaign);
+
+        let token = token::Client::new(&env, &campaign.asset.token);
+        let contract = env.current_contract_address();
+        if recovered > 0 {
+            token.transfer(&contract, &storage::get_treasury(&env)?, &recovered);
+        }
         events::EmergencyRecovery {
             campaign_id,
             amount: recovered,
