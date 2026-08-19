@@ -21,7 +21,7 @@ pub use error::Error;
 pub use types::{Application, Campaign, DisputeResolution, ProtocolConfig};
 
 use ads_bazaar_shared::{ApplicationStatus, CampaignId, CampaignStatus, PayoutAsset};
-use soroban_sdk::{contract, contractimpl, token, Address, BytesN, Env, String};
+use soroban_sdk::{contract, contractimpl, token, vec, Address, BytesN, Env, String, Symbol};
 
 /// Version string stored at `initialize` time. `upgrade` swaps the WASM
 /// binary but does not bump this on its own — see the TODO on `upgrade`
@@ -205,6 +205,13 @@ impl CampaignEscrowContract {
     ///
     /// Validates `total_budget > 0`, `max_creators > 0`, that both deadlines
     /// are in the future and that `application_deadline < completion_deadline`.
+    ///
+    /// **Token validation:** calls `decimals()` on `asset.token` via
+    /// `env.try_invoke_contract` before storing anything. If the address is not
+    /// a deployed contract, does not implement the SEP-41 interface, or returns
+    /// any error, `create_campaign` returns `Error::InvalidAsset` immediately.
+    /// This prevents creators from applying to — and doing work for — a campaign
+    /// that can never be funded.
     #[allow(clippy::too_many_arguments)]
     pub fn create_campaign(
         env: Env,
@@ -235,16 +242,30 @@ impl CampaignEscrowContract {
         }
 
         business.require_auth();
-        // Lightweight sanity check: ensure the provided token address is a
-        // responsive SEP-41 token contract. Calling a cheap read-only
-        // method (`decimals`) will surface non-contracts or non-SEP-41
-        // implementations early at creation time.
-        // Try to call the cheap read-only `decimals` entrypoint on the
-        // target address. Map any failure (non-contract, missing entrypoint,
-        // or trap) to `Error::InvalidAsset` so creation fails early with a
-        // clear error instead of aborting at fund time.
-        let token_check = token::Client::new(&env, &asset.token);
-        token_check.decimals();
+
+        // Probe the token address with a cheap read-only cross-contract call
+        // (`decimals`) before storing anything. `env.try_invoke_contract`
+        // returns a Result instead of trapping, so a non-contract address, a
+        // missing SEP-41 entrypoint, or any other host-level failure all land
+        // in the outer Err arm and are mapped to Error::InvalidAsset.
+        // This fires before the campaign is written to storage, so a bad token
+        // address is always caught at creation time — not silently deferred to
+        // fund_campaign after creators have already applied and done work.
+        let decimals_sym = Symbol::new(&env, "decimals");
+        let probe_result = env.try_invoke_contract::<u32, Error>(
+            &asset.token,
+            &decimals_sym,
+            vec![&env],
+        );
+        match probe_result {
+            // Outer Ok means the call returned (inner Ok = got a u32 back,
+            // inner Err = type conversion failed but the call itself succeeded
+            // — still a live contract). Either is acceptable.
+            Ok(_) => {}
+            // Outer Err means the host could not dispatch the call at all
+            // (non-contract address, missing entrypoint, abort).
+            Err(_) => return Err(Error::InvalidAsset),
+        }
 
         let id = storage::next_campaign_id(&env);
         let campaign = Campaign {

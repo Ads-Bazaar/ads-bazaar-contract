@@ -242,9 +242,10 @@ mod test_happy_path {
         let business = Address::generate(&env);
         client.initialize(&admin, &dispute, &50);
 
-        // Use an account address (not a registered token contract) as the
-        // payout token. Creation should be rejected at campaign creation
-        // time with `InvalidAsset` rather than later during funding.
+        // A random account address — not a deployed token contract.
+        // create_campaign must catch this via try_invoke_contract and return
+        // Error::InvalidAsset rather than aborting with a host trap or
+        // deferring the failure to fund_campaign.
         let bogus_token = Address::generate(&env);
         let asset = usdc(&env, &bogus_token);
 
@@ -259,16 +260,12 @@ mod test_happy_path {
             &soroban_sdk::String::from_str(&env, "ipfs://brief"),
         );
 
-        // Depending on SDK semantics a cross-contract read against a
-        // non-contract address may either trap (Abort) or be mappable to
-        // `Error::InvalidAsset`. Accept either outcome here; later we can
-        // refine the implementation to reliably return `InvalidAsset`.
-        let ok = match result {
-            Err(Ok(Error::InvalidAsset)) => true,
-            Err(Err(_host_err)) => true, // Abort/trap
-            _ => false,
-        };
-        assert!(ok, "expected InvalidAsset or Abort, got: {:?}", result);
+        assert_eq!(
+            result,
+            Err(Ok(Error::InvalidAsset)),
+            "expected Error::InvalidAsset for a non-contract token address, got: {:?}",
+            result
+        );
     }
 
     #[test]
