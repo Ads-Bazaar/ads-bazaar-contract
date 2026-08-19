@@ -545,12 +545,7 @@ impl CampaignEscrowContract {
             .checked_sub(fee)
             .ok_or(Error::InvalidAmount)?;
 
-        let token = token::Client::new(&env, &campaign.asset.token);
-        let contract = env.current_contract_address();
-        if fee > 0 {
-            token.transfer(&contract, &storage::get_treasury(&env)?, &fee);
-        }
-        token.transfer(&contract, &creator, &net);
+        let treasury = storage::get_treasury(&env)?;
 
         application.status = ApplicationStatus::Paid;
         storage::set_application(&env, &application);
@@ -567,6 +562,14 @@ impl CampaignEscrowContract {
             campaign.status = CampaignStatus::Completed;
         }
         storage::set_campaign(&env, &campaign);
+
+        let token = token::Client::new(&env, &campaign.asset.token);
+        let contract = env.current_contract_address();
+        if fee > 0 {
+            token.transfer(&contract, &treasury, &fee);
+        }
+        token.transfer(&contract, &creator, &net);
+
         events::PaymentReleased {
             campaign_id,
             creator,
