@@ -581,7 +581,7 @@ impl CampaignEscrowContract {
         campaign.escrow_balance = campaign.committed_payouts;
         campaign.status = CampaignStatus::Cancelled;
         storage::set_campaign(&env, &campaign);
-        events::CampaignExpired {
+        events::CampaignCancelled {
             campaign_id,
             refunded_amount: refund,
         }
@@ -629,7 +629,7 @@ impl CampaignEscrowContract {
         campaign.escrow_balance = campaign.committed_payouts;
         campaign.status = CampaignStatus::Cancelled;
         storage::set_campaign(&env, &campaign);
-        events::CampaignCancelled {
+        events::CampaignExpired {
             campaign_id,
             refunded_amount: refund,
         }

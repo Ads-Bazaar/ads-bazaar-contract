@@ -1931,8 +1931,8 @@ mod test_freeze_for_dispute {
 
 mod test_expire_event {
     use super::test_helpers::*;
-    use soroban_sdk::testutils::Events as _;
-    use soroban_sdk::{Env, Address};
+    use soroban_sdk::testutils::{Address as _, Events as _};
+    use soroban_sdk::{Address, Event as _};
 
     #[test]
     fn test_campaign_expired_event() {
@@ -1953,21 +1953,21 @@ mod test_expire_event {
         // Advance past the content deadline.
         advance_time(&env, 604_800 + 10);
 
-        // Verify CampaignExpired event is emitted
-        let events = env.events().all();
-        assert!(events.iter().any(|e| {
-            e.event
-                .contract_id
-                == contract_id
-                && e.event.event_data
-                    .clone()
-                    .into_xdr()
-                    .unwrap()
-                    .as_bytes()
-                    .starts_with(&hex::encode(&env.events().abi_encode(&crate::events::CampaignExpired {
-                        campaign_id: id,
-                        refunded_amount: 0, // No unallocated balance
-                    })))
-        }), "Expected CampaignExpired event to be emitted");
+        // Expire the campaign — this is what emits the CampaignExpired event.
+        client.expire_campaign(&business, &id);
+
+        // Verify CampaignExpired was emitted with the unallocated refund
+        // (budget minus the 2M committed to the approved creators).
+        let events = env.events().all().filter_by_contract(&contract_id);
+        assert_eq!(
+            events.events().last(),
+            Some(
+                &crate::events::CampaignExpired {
+                    campaign_id: id,
+                    refunded_amount: budget - 2 * 1_000_000,
+                }
+                .to_xdr(&env, &contract_id)
+            )
+        );
     }
 }
