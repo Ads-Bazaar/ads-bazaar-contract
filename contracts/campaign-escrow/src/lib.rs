@@ -957,17 +957,8 @@ impl CampaignEscrowContract {
             / ads_bazaar_shared::BASIS_POINTS_DENOMINATOR;
         let creator_net = creator_gross.checked_sub(fee).ok_or(Error::InvalidAmount)?;
 
-        let token = token::Client::new(&env, &campaign.asset.token);
-        let contract = env.current_contract_address();
-        if fee > 0 {
-            token.transfer(&contract, &storage::get_treasury(&env)?, &fee);
-        }
-        if creator_net > 0 {
-            token.transfer(&contract, &creator, &creator_net);
-        }
-        if business_amount > 0 {
-            token.transfer(&contract, &campaign.business, &business_amount);
-        }
+        let treasury = storage::get_treasury(&env)?;
+        let business = campaign.business.clone();
 
         application.status = ApplicationStatus::Paid;
         // The dispute is settled, so drop both the freeze and the window
@@ -988,6 +979,18 @@ impl CampaignEscrowContract {
             campaign.status = CampaignStatus::Completed;
         }
         storage::set_campaign(&env, &campaign);
+
+        let token = token::Client::new(&env, &campaign.asset.token);
+        let contract = env.current_contract_address();
+        if fee > 0 {
+            token.transfer(&contract, &treasury, &fee);
+        }
+        if creator_net > 0 {
+            token.transfer(&contract, &creator, &creator_net);
+        }
+        if business_amount > 0 {
+            token.transfer(&contract, &business, &business_amount);
+        }
 
         events::DisputeResolved {
             campaign_id,
