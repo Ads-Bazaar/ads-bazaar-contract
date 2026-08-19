@@ -600,8 +600,6 @@ impl CampaignEscrowContract {
             return Err(Error::InvalidStatus);
         }
 
-        let token = token::Client::new(&env, &campaign.asset.token);
-        let contract = env.current_contract_address();
         // Never refund more than the unallocated balance. `committed_payouts`
         // is reserved for approved creators who are still owed payment and can
         // `claim_payment` even after the campaign is cancelled.
@@ -609,14 +607,17 @@ impl CampaignEscrowContract {
             .escrow_balance
             .checked_sub(campaign.committed_payouts)
             .ok_or(Error::InvalidAmount)?;
-        if refund > 0 {
-            token.transfer(&contract, &business, &refund);
-        }
         // Leave `committed_payouts` intact so approved-but-unpaid creators can
         // still claim their payouts afterward.
         campaign.escrow_balance = campaign.committed_payouts;
         campaign.status = CampaignStatus::Cancelled;
         storage::set_campaign(&env, &campaign);
+
+        let token = token::Client::new(&env, &campaign.asset.token);
+        let contract = env.current_contract_address();
+        if refund > 0 {
+            token.transfer(&contract, &business, &refund);
+        }
         events::CampaignCancelled {
             campaign_id,
             refunded_amount: refund,
