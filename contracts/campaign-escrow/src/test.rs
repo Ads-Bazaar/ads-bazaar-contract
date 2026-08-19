@@ -513,12 +513,12 @@ mod test_happy_path {
         // It requires freeze_for_dispute which is available in lib.rs, but we need to check if it's exposed in the client.
         // It should be automatically exposed by soroban_sdk contractimpl.
         client.freeze_for_dispute(&admin, &id, &creator);
-        
+
         let app = client.get_application(&id, &creator);
         assert!(app.frozen);
-        
+
         client.resolve_dispute(&admin, &id, &creator, &crate::DisputeResolution::PayCreator);
-        
+
         // Payout should have reached creator
         assert_eq!(token_client.balance(&creator), payout);
     }
