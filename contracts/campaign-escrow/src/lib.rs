@@ -766,17 +766,12 @@ impl CampaignEscrowContract {
             return Err(Error::InvalidStatus);
         }
 
-        let token = token::Client::new(&env, &campaign.asset.token);
-        let contract = env.current_contract_address();
         // Surplus is the unallocated balance only; committed payouts stay
         // reserved for approved creators who can still `claim_payment`.
         let surplus = campaign
             .escrow_balance
             .checked_sub(campaign.committed_payouts)
             .ok_or(Error::InvalidAmount)?;
-        if surplus > 0 {
-            token.transfer(&contract, &business, &surplus);
-        }
         // Leave `committed_payouts` intact so approved-but-unpaid creators can
         // still claim their payouts afterward.
         campaign.escrow_balance = campaign.committed_payouts;
@@ -784,6 +779,12 @@ impl CampaignEscrowContract {
             campaign.status = CampaignStatus::Completed;
         }
         storage::set_campaign(&env, &campaign);
+
+        let token = token::Client::new(&env, &campaign.asset.token);
+        let contract = env.current_contract_address();
+        if surplus > 0 {
+            token.transfer(&contract, &business, &surplus);
+        }
         events::SurplusReclaimed {
             campaign_id,
             amount: surplus,
