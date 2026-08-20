@@ -12,6 +12,7 @@
 //! USDC, etc. without per-asset special-casing.
 #![no_std]
 
+mod dispute;
 mod error;
 mod events;
 mod storage;
@@ -20,7 +21,9 @@ mod types;
 pub use error::Error;
 pub use types::{Application, Campaign, DisputeResolution, ProtocolConfig};
 
-use ads_bazaar_shared::{ApplicationStatus, CampaignId, CampaignStatus, PayoutAsset};
+use ads_bazaar_shared::{
+    ApplicationStatus, CampaignId, CampaignStatus, DisputeOutcome, PayoutAsset,
+};
 use soroban_sdk::{contract, contractimpl, token, Address, BytesN, Env, String};
 
 /// Version string stored at `initialize` time. `upgrade` swaps the WASM
@@ -895,6 +898,15 @@ impl CampaignEscrowContract {
     /// - At least `MIN_EVIDENCE_WINDOW` must have elapsed since that freeze
     ///   (`Error::EvidenceWindowOpen` otherwise), so neither party's payout
     ///   can be reallocated out from under them without warning.
+    ///
+    /// Reconciliation with `dispute-resolution`: when the frozen payout was
+    /// frozen via `raise_dispute` (the normal flow), this contract closes the
+    /// corresponding open dispute record out by calling
+    /// `dispute-resolution::close_dispute` with the `DisputeOutcome` that
+    /// matches `resolution`, so `get_dispute` never reports a permanently
+    /// open dispute over money that has moved. When the freeze came from the
+    /// admin's direct `freeze_for_dispute` path there is no record to close,
+    /// and the call is a no-op.
     pub fn resolve_dispute(
         env: Env,
         admin: Address,
@@ -929,16 +941,22 @@ impl CampaignEscrowContract {
 
         let payout_amount = application.payout_amount;
         let fee_bps = campaign.fee_bps;
-        let (creator_gross, business_amount) = match resolution {
-            DisputeResolution::PayCreator => (payout_amount, 0),
-            DisputeResolution::RefundBusiness => (0, payout_amount),
+        let (creator_gross, business_amount, dispute_outcome) = match resolution {
+            DisputeResolution::PayCreator => (payout_amount, 0, DisputeOutcome::CreatorFavored),
+            DisputeResolution::RefundBusiness => {
+                (0, payout_amount, DisputeOutcome::BusinessFavored)
+            }
             DisputeResolution::Split(bps) => {
                 if !(0..=ads_bazaar_shared::BASIS_POINTS_DENOMINATOR).contains(&bps) {
                     return Err(Error::InvalidAmount);
                 }
                 let creator_gross = payout_amount.checked_mul(bps).ok_or(Error::InvalidAmount)?
                     / ads_bazaar_shared::BASIS_POINTS_DENOMINATOR;
-                (creator_gross, payout_amount - creator_gross)
+                (
+                    creator_gross,
+                    payout_amount - creator_gross,
+                    DisputeOutcome::Split(bps),
+                )
             }
         };
 
@@ -981,6 +999,20 @@ impl CampaignEscrowContract {
             campaign.status = CampaignStatus::Completed;
         }
         storage::set_campaign(&env, &campaign);
+
+        // Keep `dispute-resolution`'s record in step: if this payout has an
+        // open dispute raised through `raise_dispute`, close it out so its
+        // `get_dispute` read never reports a permanently-open dispute over
+        // funds that have already moved. No-op when the freeze came from the
+        // admin's direct path and no record exists to close.
+        let dispute_contract =
+            dispute::DisputeResolutionClient::new(&env, &storage::get_dispute_contract(&env)?);
+        dispute_contract.close_dispute(
+            &env.current_contract_address(),
+            &campaign_id,
+            &creator,
+            &dispute_outcome,
+        );
 
         events::DisputeResolved {
             campaign_id,

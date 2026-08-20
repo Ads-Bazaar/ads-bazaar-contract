@@ -178,7 +178,61 @@ impl DisputeResolutionContract {
         todo!("design + implement dispute resolution — see doc comment above")
     }
 
+    /// Close out the open dispute over a `(campaign_id, creator)` payout that
+    /// `campaign-escrow::resolve_dispute` (the admin bypass) just settled.
+    /// Only the `campaign-escrow` contract set at `initialize` may call this —
+    /// it is the party that moved the funds, and the only one that knows the
+    /// admin's chosen resolution, which it records here as the matching
+    /// `DisputeOutcome` (see `escrow.rs`).
+    ///
+    /// Idempotent: if there is no open dispute record for that payout — the
+    /// freeze came from the admin's direct `freeze_for_dispute` path rather
+    /// than `raise_dispute`, or the dispute was already closed — this is a
+    /// no-op rather than an error. Without that, `resolve_dispute` settling
+    /// an admin-frozen (never-`raise_dispute`d) payout would trap on a
+    /// missing record.
+    pub fn close_dispute(
+        env: Env,
+        caller: Address,
+        campaign_id: CampaignId,
+        creator: Address,
+        outcome: DisputeOutcome,
+    ) -> Result<(), Error> {
+        caller.require_auth();
+        if caller != storage::get_escrow_contract(&env)? {
+            return Err(Error::Unauthorized);
+        }
+        if outcome == DisputeOutcome::Pending {
+            return Err(Error::InvalidStatus);
+        }
+
+        let Some(dispute_id) = storage::get_open_dispute(&env, campaign_id, &creator) else {
+            return Ok(());
+        };
+
+        let mut dispute = storage::get_dispute(&env, dispute_id)?;
+        dispute.status = DisputeStatus::Resolved;
+        dispute.outcome = outcome;
+        dispute.resolved_at = Some(env.ledger().timestamp());
+        storage::set_dispute(&env, dispute_id, &dispute);
+        storage::clear_open_dispute(&env, campaign_id, &creator);
+
+        events::DisputeResolved { dispute_id }.publish(&env);
+        Ok(())
+    }
+
     /// Read-only lookup of a dispute's current state.
+    ///
+    /// Note: a dispute raised via `raise_dispute` may also be settled by the
+    /// admin directly through `campaign-escrow::resolve_dispute`, which
+    /// closes the record out via `close_dispute`. A `Raised`/`Pending` status
+    /// here therefore only means "still open in *this* contract" — it is not
+    /// authoritative over whether the escrowed payout is still held. To tell
+    /// the two apart, cross-reference
+    /// `campaign-escrow::get_application(campaign_id, creator)`: a dispute
+    /// still reporting `Raised` while the application is `frozen == false`
+    /// (or `status == Paid`) means the admin bypass settled it without a
+    /// dispute-resolution record to close.
     pub fn get_dispute(env: Env, dispute_id: DisputeId) -> Result<Dispute, Error> {
         storage::get_dispute(&env, dispute_id)
     }

@@ -55,6 +55,13 @@ mod test_helpers {
     /// Initialize the contract (admin + dispute contract + fee_bps) and mint
     /// `BUSINESS_FUNDS` to a freshly generated business address. Returns the
     /// client plus the generated identities.
+    ///
+    /// The dispute slot is a real, initialized `dispute-resolution` contract
+    /// rather than a bare generated address: `resolve_dispute` closes out an
+    /// open dispute there with a cross-contract call, so a placeholder
+    /// address would trap. No dispute-resolution record is created unless a
+    /// test explicitly goes through `raise_dispute`, so the close-out call is
+    /// a no-op for most tests here.
     pub fn bootstrap<'a>(
         env: &'a Env,
         contract_id: &Address,
@@ -68,9 +75,11 @@ mod test_helpers {
     ) {
         let client = CampaignEscrowContractClient::new(env, contract_id);
         let admin = Address::generate(env);
-        let dispute = Address::generate(env);
+        let dispute = env.register(ads_bazaar_dispute_resolution::DisputeResolutionContract, ());
         let business = Address::generate(env);
         client.initialize(&admin, &dispute, &fee_bps);
+        ads_bazaar_dispute_resolution::DisputeResolutionContractClient::new(env, &dispute)
+            .initialize(&admin, contract_id);
         let token = setup_token(env, &business, BUSINESS_FUNDS);
         (client, admin, dispute, business, token)
     }

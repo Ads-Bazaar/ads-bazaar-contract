@@ -476,3 +476,186 @@ mod test_assign_arbiter {
         assert_eq!(result, Err(Ok(Error::DisputeNotFound)));
     }
 }
+
+mod test_close_dispute {
+    use super::test_helpers::*;
+    use crate::Error;
+    use ads_bazaar_shared::{DisputeOutcome, DisputeStatus};
+    use soroban_sdk::testutils::{Address as _, Ledger as _};
+    use soroban_sdk::{Address, String};
+
+    fn raise_over(env: &soroban_sdk::Env, f: &super::test_helpers::Fixture<'_>) -> u64 {
+        f.disputes.raise_dispute(
+            &f.creator,
+            &f.campaign_id,
+            &f.creator,
+            &String::from_str(env, "ipfs://evidence"),
+        )
+    }
+
+    /// The escrow contract closes a dispute raised through `raise_dispute`:
+    /// the record reflects `Resolved` with the escrow-supplied outcome.
+    #[test]
+    fn escrow_close_dispute_marks_record_resolved() {
+        let (env, escrow_id, dispute_id) = setup_env();
+        let f = bootstrap(&env, &escrow_id, &dispute_id);
+        let id = raise_over(&env, &f);
+
+        f.disputes.close_dispute(
+            &escrow_id,
+            &f.campaign_id,
+            &f.creator,
+            &DisputeOutcome::CreatorFavored,
+        );
+
+        let dispute = f.disputes.get_dispute(&id);
+        assert_eq!(dispute.status, DisputeStatus::Resolved);
+        assert_eq!(dispute.outcome, DisputeOutcome::CreatorFavored);
+        assert_eq!(dispute.resolved_at, Some(BASE_TIME));
+    }
+
+    /// The open marker is cleared, so a fresh dispute over the same payout
+    /// can be raised again once escrow has unfrozen it (in the real flow
+    /// `resolve_dispute` closes the record *and* unfreezes in the same call).
+    #[test]
+    fn close_dispute_clears_open_marker() {
+        let (env, escrow_id, dispute_id) = setup_env();
+        let f = bootstrap(&env, &escrow_id, &dispute_id);
+        raise_over(&env, &f);
+
+        f.disputes.close_dispute(
+            &escrow_id,
+            &f.campaign_id,
+            &f.creator,
+            &DisputeOutcome::BusinessFavored,
+        );
+
+        let marker = env.as_contract(&f.disputes.address, || {
+            crate::storage::get_open_dispute(&env, f.campaign_id, &f.creator)
+        });
+        assert_eq!(marker, None);
+    }
+
+    /// Only the configured escrow contract may close a dispute — a stranger
+    /// must not be able to flip a record to `Resolved` without funds moving.
+    #[test]
+    fn non_escrow_caller_is_rejected() {
+        let (env, escrow_id, dispute_id) = setup_env();
+        let f = bootstrap(&env, &escrow_id, &dispute_id);
+        let id = raise_over(&env, &f);
+        let stranger = Address::generate(&env);
+
+        let result = f.disputes.try_close_dispute(
+            &stranger,
+            &f.campaign_id,
+            &f.creator,
+            &DisputeOutcome::CreatorFavored,
+        );
+
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
+        // The rejected close must not have touched the record.
+        let dispute = f.disputes.get_dispute(&id);
+        assert_eq!(dispute.status, DisputeStatus::Raised);
+        assert_eq!(dispute.outcome, DisputeOutcome::Pending);
+        assert_eq!(dispute.resolved_at, None);
+    }
+
+    /// A payout frozen directly by the admin (never `raise_dispute`d) has no
+    /// record to close — `close_dispute` is a no-op, not an error, so the
+    /// escrow's `resolve_dispute` doesn't trap on the admin-direct path.
+    #[test]
+    fn close_dispute_is_noop_without_open_record() {
+        let (env, escrow_id, dispute_id) = setup_env();
+        let f = bootstrap(&env, &escrow_id, &dispute_id);
+
+        let result = f.disputes.try_close_dispute(
+            &escrow_id,
+            &f.campaign_id,
+            &f.creator,
+            &DisputeOutcome::CreatorFavored,
+        );
+
+        assert!(result.is_ok());
+        // Nothing to look up afterward — no record was created by closing.
+        assert_eq!(
+            f.disputes.try_get_dispute(&0),
+            Err(Ok(Error::DisputeNotFound))
+        );
+    }
+
+    /// A second close is harmless: the marker is already gone, so it no-ops.
+    #[test]
+    fn close_dispute_twice_is_idempotent() {
+        let (env, escrow_id, dispute_id) = setup_env();
+        let f = bootstrap(&env, &escrow_id, &dispute_id);
+        let id = raise_over(&env, &f);
+
+        f.disputes.close_dispute(
+            &escrow_id,
+            &f.campaign_id,
+            &f.creator,
+            &DisputeOutcome::Split(5_000),
+        );
+        let result = f.disputes.try_close_dispute(
+            &escrow_id,
+            &f.campaign_id,
+            &f.creator,
+            &DisputeOutcome::Split(5_000),
+        );
+
+        assert!(result.is_ok());
+        let dispute = f.disputes.get_dispute(&id);
+        assert_eq!(dispute.status, DisputeStatus::Resolved);
+        assert_eq!(dispute.outcome, DisputeOutcome::Split(5_000));
+        // `resolved_at` keeps the first close's timestamp.
+        assert_eq!(dispute.resolved_at, Some(BASE_TIME));
+    }
+
+    /// `Pending` is not a settlement outcome — a resolved record must always
+    /// say which side won, or it would recreate the very ambiguity this
+    /// close-out exists to remove.
+    #[test]
+    fn pending_outcome_is_rejected() {
+        let (env, escrow_id, dispute_id) = setup_env();
+        let f = bootstrap(&env, &escrow_id, &dispute_id);
+        let id = raise_over(&env, &f);
+
+        let result = f.disputes.try_close_dispute(
+            &escrow_id,
+            &f.campaign_id,
+            &f.creator,
+            &DisputeOutcome::Pending,
+        );
+
+        assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+        assert_eq!(f.disputes.get_dispute(&id).status, DisputeStatus::Raised);
+    }
+
+    /// The acceptance flow end-to-end: a dispute raised through the real
+    /// `raise_dispute` path is settled by `campaign-escrow::resolve_dispute`,
+    /// and the dispute-resolution record reflects `Resolved`.
+    #[test]
+    fn escrow_admin_resolve_dispute_closes_open_record() {
+        let (env, escrow_id, dispute_id) = setup_env();
+        let f = bootstrap(&env, &escrow_id, &dispute_id);
+        let id = raise_over(&env, &f);
+
+        env.ledger().with_mut(|l| {
+            l.timestamp += ads_bazaar_campaign_escrow::MIN_EVIDENCE_WINDOW;
+        });
+        f.escrow.resolve_dispute(
+            &f.admin,
+            &f.campaign_id,
+            &f.creator,
+            &ads_bazaar_campaign_escrow::DisputeResolution::PayCreator,
+        );
+
+        let dispute = f.disputes.get_dispute(&id);
+        assert_eq!(dispute.status, DisputeStatus::Resolved);
+        assert_eq!(dispute.outcome, DisputeOutcome::CreatorFavored);
+        assert_eq!(
+            dispute.resolved_at,
+            Some(BASE_TIME + ads_bazaar_campaign_escrow::MIN_EVIDENCE_WINDOW)
+        );
+    }
+}
