@@ -384,6 +384,9 @@ impl CampaignEscrowContract {
         if payout_amount <= 0 {
             return Err(Error::InvalidAmount);
         }
+        if env.ledger().timestamp() >= campaign.completion_deadline {
+            return Err(Error::ContentDeadlinePassed);
+        }
 
         let mut application = storage::get_application(&env, campaign_id, &creator)?;
         if application.status != ApplicationStatus::Pending {
