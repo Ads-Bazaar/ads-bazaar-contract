@@ -825,9 +825,10 @@ impl CampaignEscrowContract {
         }
 
         let campaign = storage::get_campaign(&env, campaign_id)?;
-        if campaign.status == CampaignStatus::Cancelled {
-            return Err(Error::InvalidStatus);
-        }
+        // We do not reject on `CampaignStatus::Cancelled`. A campaign can be Cancelled
+        // while approved creators still have committed payouts pending. If those payouts
+        // become deadlocked (e.g. deadline passed without ProofSubmitted), freezing
+        // them is the first step to resolving them via dispute resolution.
 
         let mut application = storage::get_application(&env, campaign_id, &creator)?;
         require_not_frozen(&application)?;
@@ -906,9 +907,7 @@ impl CampaignEscrowContract {
         require_admin(&env, &admin)?;
 
         let mut campaign = storage::get_campaign(&env, campaign_id)?;
-        if campaign.status == CampaignStatus::Cancelled
-            || campaign.status == CampaignStatus::Completed
-        {
+        if campaign.status == CampaignStatus::Completed {
             return Err(Error::InvalidStatus);
         }
 

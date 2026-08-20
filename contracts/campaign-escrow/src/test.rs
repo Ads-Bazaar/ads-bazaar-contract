@@ -1772,6 +1772,66 @@ mod test_resolve_dispute {
         );
     }
 
+    #[test]
+    fn resolve_dispute_works_on_expired_campaign_with_abandoned_submission() {
+        let (env, contract_id) = setup_env();
+        let (client, admin, dispute, business, token) = bootstrap(&env, &contract_id, 0);
+        let token_client = TokenClient::new(&env, &token);
+
+        let payout: i128 = 1_000_000;
+        let id = create_funded_campaign(&env, &client, &business, &token, payout, 5);
+        let creator = Address::generate(&env);
+        client.apply_to_campaign(&creator, &id, &soroban_sdk::String::from_str(&env, "pitch"));
+        client.approve_creator(&business, &id, &creator, &payout);
+
+        // Creator never submits proof. Deadline passes.
+        advance_time(&env, 604_800 + 10);
+        client.expire_campaign(&business, &id);
+
+        let campaign = client.get_campaign(&id);
+        assert_eq!(
+            campaign.status,
+            ads_bazaar_shared::CampaignStatus::Cancelled
+        );
+
+        // Payout is stuck. We can freeze and resolve it.
+        open_dispute_and_wait_out_window(&env, &client, &dispute, id, &creator);
+
+        let creator_before = token_client.balance(&creator);
+        client.resolve_dispute(&admin, &id, &creator, &DisputeResolution::PayCreator);
+        assert_eq!(token_client.balance(&creator), creator_before + payout);
+    }
+
+    #[test]
+    fn resolve_dispute_works_on_cancelled_campaign_with_abandoned_submission() {
+        let (env, contract_id) = setup_env();
+        let (client, admin, dispute, business, token) = bootstrap(&env, &contract_id, 0);
+        let token_client = TokenClient::new(&env, &token);
+
+        let payout: i128 = 1_000_000;
+        let id = create_funded_campaign(&env, &client, &business, &token, payout, 5);
+        let creator = Address::generate(&env);
+        client.apply_to_campaign(&creator, &id, &soroban_sdk::String::from_str(&env, "pitch"));
+        client.approve_creator(&business, &id, &creator, &payout);
+
+        // Business cancels immediately.
+        client.cancel_campaign(&business, &id);
+
+        let campaign = client.get_campaign(&id);
+        assert_eq!(
+            campaign.status,
+            ads_bazaar_shared::CampaignStatus::Cancelled
+        );
+
+        // Payout is stuck. We can freeze and resolve it.
+        open_dispute_and_wait_out_window(&env, &client, &dispute, id, &creator);
+
+        let business_before = token_client.balance(&business);
+        // We can also refund the business for an abandoned submission.
+        client.resolve_dispute(&admin, &id, &creator, &DisputeResolution::RefundBusiness);
+        assert_eq!(token_client.balance(&business), business_before + payout);
+    }
+
     // ── Evidence window ───────────────────────────────────────────────────
 
     /// Take a creator to an approved, proof-submitted application and open a
@@ -2098,18 +2158,6 @@ mod test_freeze_for_dispute {
         client.freeze_for_dispute(&dispute, &id, &creator);
         let result = client.try_freeze_for_dispute(&dispute, &id, &creator);
         assert_eq!(result, Err(Ok(Error::PayoutFrozen)));
-    }
-
-    #[test]
-    fn freeze_rejects_cancelled_campaign() {
-        let (env, contract_id) = setup_env();
-        let (client, _admin, dispute, business, token) = bootstrap(&env, &contract_id, 50);
-        let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
-        let creator = payable_application(&env, &client, &business, id, 1_000_000);
-        client.cancel_campaign(&business, &id);
-
-        let result = client.try_freeze_for_dispute(&dispute, &id, &creator);
-        assert_eq!(result, Err(Ok(Error::InvalidStatus)));
     }
 
     #[test]
