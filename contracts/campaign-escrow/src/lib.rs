@@ -874,11 +874,7 @@ impl CampaignEscrowContract {
     }
 
     /// Admin-resolved settlement for a single creator's committed-but-not-
-    /// yet-paid application, as a simplified interim path alongside the
-    /// arbiter-resolved `dispute-resolution` contract (`resolve_dispute_payout`
-    /// above is the intended integration point for that contract once it's
-    /// implemented; this is a separate admin-only shortcut that works today
-    /// without it). Admin-only.
+    /// yet-paid application. Admin-only.
     ///
     /// Requires an application with a nonzero `payout_amount` that hasn't
     /// already been paid — i.e. one that was approved via `approve_creator`
@@ -891,9 +887,9 @@ impl CampaignEscrowContract {
     ///
     /// - The application must have been frozen by `freeze_for_dispute`
     ///   (`Error::NoDisputeOpen` otherwise). Admin can call that themselves,
-    ///   so this is not a dependency on the `dispute-resolution` contract —
-    ///   but it does mean every admin settlement is preceded by a public
-    ///   `events::DisputeFrozen`, which is what gives the counterparty
+    ///   so this is not a hard dependency on the `dispute-resolution`
+    ///   contract — but it does mean every admin settlement is preceded by a
+    ///   public `events::DisputeFrozen`, which is what gives the counterparty
     ///   something to notice.
     /// - At least `MIN_EVIDENCE_WINDOW` must have elapsed since that freeze
     ///   (`Error::EvidenceWindowOpen` otherwise), so neither party's payout
@@ -906,7 +902,10 @@ impl CampaignEscrowContract {
     /// matches `resolution`, so `get_dispute` never reports a permanently
     /// open dispute over money that has moved. When the freeze came from the
     /// admin's direct `freeze_for_dispute` path there is no record to close,
-    /// and the call is a no-op.
+    /// and the call is a no-op. Uses `try_close_dispute` (the fallible
+    /// wrapper) so that a broken or unset dispute-resolution contract cannot
+    /// brick the admin settlement path — state writes and token transfers
+    /// are committed first, and the close-out is best-effort.
     pub fn resolve_dispute(
         env: Env,
         admin: Address,
@@ -968,18 +967,8 @@ impl CampaignEscrowContract {
             / ads_bazaar_shared::BASIS_POINTS_DENOMINATOR;
         let creator_net = creator_gross.checked_sub(fee).ok_or(Error::InvalidAmount)?;
 
-        let token = token::Client::new(&env, &campaign.asset.token);
-        let contract = env.current_contract_address();
-        if fee > 0 {
-            token.transfer(&contract, &storage::get_treasury(&env)?, &fee);
-        }
-        if creator_net > 0 {
-            token.transfer(&contract, &creator, &creator_net);
-        }
-        if business_amount > 0 {
-            token.transfer(&contract, &campaign.business, &business_amount);
-        }
-
+        // Finalize state writes before token transfers so that if a
+        // transfer fails, the entire invocation traps and reverts atomically.
         application.status = ApplicationStatus::Paid;
         // The dispute is settled, so drop both the freeze and the window
         // clock rather than leaving a paid application marked contested.
@@ -1000,14 +989,27 @@ impl CampaignEscrowContract {
         }
         storage::set_campaign(&env, &campaign);
 
-        // Keep `dispute-resolution`'s record in step: if this payout has an
-        // open dispute raised through `raise_dispute`, close it out so its
-        // `get_dispute` read never reports a permanently-open dispute over
-        // funds that have already moved. No-op when the freeze came from the
-        // admin's direct path and no record exists to close.
+        let token = token::Client::new(&env, &campaign.asset.token);
+        let contract = env.current_contract_address();
+        if fee > 0 {
+            token.transfer(&contract, &storage::get_treasury(&env)?, &fee);
+        }
+        if creator_net > 0 {
+            token.transfer(&contract, &creator, &creator_net);
+        }
+        if business_amount > 0 {
+            token.transfer(&contract, &campaign.business, &business_amount);
+        }
+
+        // Best-effort close of dispute-resolution's record: if this payout
+        // was frozen via `raise_dispute`, close it out so `get_dispute` never
+        // reports a permanently-open dispute over funds that have already
+        // moved. Uses `try_close_dispute` so a broken/unset dispute contract
+        // cannot brick the admin settlement path. No-op when the freeze came
+        // from the admin's direct path and no record exists to close.
         let dispute_contract =
             dispute::DisputeResolutionClient::new(&env, &storage::get_dispute_contract(&env)?);
-        dispute_contract.close_dispute(
+        let _ = dispute_contract.try_close_dispute(
             &env.current_contract_address(),
             &campaign_id,
             &creator,
@@ -1017,6 +1019,7 @@ impl CampaignEscrowContract {
         events::DisputeResolved {
             campaign_id,
             creator,
+            dispute_outcome,
             creator_amount: creator_net,
             business_amount,
         }

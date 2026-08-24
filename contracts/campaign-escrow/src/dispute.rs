@@ -7,11 +7,12 @@
 //! signatures in sync with `dispute-resolution/src/lib.rs`. This mirrors the
 //! local `escrow` client in `dispute-resolution/src/escrow.rs`.
 //!
-//! The method is declared infallible even though the dispute-resolution
+//! `close_dispute` is declared infallible even though the dispute-resolution
 //! contract returns `Result<_, Error>`. The encoding is identical on success,
-//! and an error from the callee traps the whole invocation — which is the
-//! behavior we want: `resolve_dispute` must not settle a payout while leaving
-//! dispute-resolution's record behind as permanently open.
+//! and an error from the callee traps the whole invocation. Callers that need
+//! to survive a broken/unset dispute-resolution contract should use the
+//! auto-generated `try_close_dispute` wrapper instead, which recovers from
+//! the trap and lets the admin settlement path proceed.
 #![allow(dead_code)]
 
 use ads_bazaar_shared::{CampaignId, DisputeOutcome};
