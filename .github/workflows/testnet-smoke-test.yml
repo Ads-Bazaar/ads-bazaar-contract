@@ -53,11 +53,34 @@ jobs:
 
       - name: Generate test environment
         run: |
-          # Create .env file with test secrets (these are test-only accounts)
-          cat > .env <<'EOF'
-          DEPLOYER_SECRET=SBKXS3ZCQNM6PJZ3Q7Q7Q7Q7Q7Q7Q7Q7Q7Q7Q7Q7Q7Q7Q7Q7Q7Q7Q7Q7Q7Q7
-          ADMIN_ADDRESS=GBUQWP3BOUZX34ULNQG23RQ6F4BFSRXVHAEVZQOTPY5A37YPUYSFVROA
-          ADMIN_SECRET=SBKXS3ZCQNM6PJZ3Q7Q7Q7Q7Q7Q7Q7Q7Q7Q7Q7Q7Q7Q7Q7Q7Q7Q7Q7Q7Q7Q7
+          export PATH="/root/.local/bin:$PATH"
+          
+          # Generate fresh deployer and admin accounts (funded via Friendbot)
+          echo "Generating deployer account..."
+          DEPLOYER_SECRET=$(stellar keys generate | grep "Secret:" | awk '{print $2}')
+          DEPLOYER_ADDRESS=$(stellar keys show --secret-key "$DEPLOYER_SECRET")
+          echo "Deployer: $DEPLOYER_ADDRESS"
+          
+          # Fund deployer via Friendbot
+          curl -s "https://friendbot.stellar.org/?addr=$DEPLOYER_ADDRESS" > /dev/null
+          echo "Deployer account funded"
+          sleep 2
+          
+          echo "Generating admin account..."
+          ADMIN_SECRET=$(stellar keys generate | grep "Secret:" | awk '{print $2}')
+          ADMIN_ADDRESS=$(stellar keys show --secret-key "$ADMIN_SECRET")
+          echo "Admin: $ADMIN_ADDRESS"
+          
+          # Fund admin via Friendbot
+          curl -s "https://friendbot.stellar.org/?addr=$ADMIN_ADDRESS" > /dev/null
+          echo "Admin account funded"
+          sleep 2
+          
+          # Create .env file with generated, funded secrets
+          cat > .env <<EOF
+          DEPLOYER_SECRET=$DEPLOYER_SECRET
+          ADMIN_ADDRESS=$ADMIN_ADDRESS
+          ADMIN_SECRET=$ADMIN_SECRET
           FEE_BPS=500
           STELLAR_NETWORK=testnet
           EOF
