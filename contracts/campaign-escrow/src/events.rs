@@ -56,6 +56,15 @@ pub struct ProofSubmitted {
 
 #[contractevent]
 #[derive(Clone, Debug)]
+pub struct SubmissionApproved {
+    #[topic]
+    pub campaign_id: CampaignId,
+    #[topic]
+    pub creator: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
 pub struct SubmissionRejected {
     #[topic]
     pub campaign_id: CampaignId,

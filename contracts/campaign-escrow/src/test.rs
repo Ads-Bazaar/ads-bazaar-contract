@@ -2294,3 +2294,74 @@ mod test_freeze_for_dispute {
         assert_eq!(result, Err(Ok(Error::SubmissionNotPayable)));
     }
 }
+
+mod test_events {
+    use super::test_helpers::*;
+    use crate::events::SubmissionApproved;
+    use soroban_sdk::testutils::{Address as _, Events as _};
+    use soroban_sdk::{Address, Env, Event as _, String};
+
+    /// Drive `creator` to a submitted (but not yet approved) proof.
+    fn run_to_proof_submitted(
+        env: &Env,
+        client: &crate::CampaignEscrowContractClient,
+        business: &Address,
+        creator: &Address,
+        id: u64,
+        payout: i128,
+    ) {
+        client.apply_to_campaign(creator, &id, &String::from_str(env, "pitch"));
+        client.approve_creator(business, &id, creator, &payout);
+        client.submit_proof(creator, &id, &String::from_str(env, "proof"));
+    }
+
+    #[test]
+    fn approve_submission_emits_submission_approved() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+        let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
+        let creator = Address::generate(&env);
+        run_to_proof_submitted(&env, &client, &business, &creator, id, 1_000_000);
+
+        client.approve_submission(&business, &id, &creator);
+
+        let expected = SubmissionApproved {
+            campaign_id: id,
+            creator: creator.clone(),
+        }
+        .to_xdr(&env, &contract_id);
+        let published = env.events().all().filter_by_contract(&contract_id);
+        assert_eq!(
+            published.events().last(),
+            Some(&expected),
+            "approve_submission must publish SubmissionApproved for the approved creator"
+        );
+    }
+
+    #[test]
+    fn submission_approved_identifies_the_approved_creator() {
+        let (env, contract_id) = setup_env();
+        let (client, _admin, _dispute, business, token) = bootstrap(&env, &contract_id, 50);
+        let id = create_funded_campaign(&env, &client, &business, &token, 10_000_000, 5);
+        let creator_a = Address::generate(&env);
+        let creator_b = Address::generate(&env);
+        run_to_proof_submitted(&env, &client, &business, &creator_a, id, 1_000_000);
+        run_to_proof_submitted(&env, &client, &business, &creator_b, id, 2_000_000);
+
+        client.approve_submission(&business, &id, &creator_b);
+
+        let unexpected = SubmissionApproved {
+            campaign_id: id,
+            creator: creator_a.clone(),
+        }
+        .to_xdr(&env, &contract_id);
+        let expected = SubmissionApproved {
+            campaign_id: id,
+            creator: creator_b.clone(),
+        }
+        .to_xdr(&env, &contract_id);
+        let published = env.events().all().filter_by_contract(&contract_id);
+        assert!(published.events().contains(&expected));
+        assert!(!published.events().contains(&unexpected));
+    }
+}

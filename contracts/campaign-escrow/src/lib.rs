@@ -499,6 +499,11 @@ impl CampaignEscrowContract {
         }
         application.proof_approved = true;
         storage::set_application(&env, &application);
+        events::SubmissionApproved {
+            campaign_id,
+            creator,
+        }
+        .publish(&env);
         Ok(())
     }
 
