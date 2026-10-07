@@ -4,11 +4,11 @@ test_snapshots/
 *.wasm
 .DS_Store
 .idea/
-.vscode/*
 !.vscode/extensions.json
 *.log
-.env
 .env.testnet
 .env.futurenet
 .env.mainnet
 !.env.example
+config.bat
+node_modules
