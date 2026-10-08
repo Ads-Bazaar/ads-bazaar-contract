@@ -30,8 +30,10 @@ types instead of drifting apart.
   `resolve_dispute_payout`, callable only by the configured
   `dispute_contract` address, and `dispute-resolution` calling back into
   escrow once a dispute resolves. `freeze_for_dispute` is implemented (a
-  per-application freeze wired up by `raise_dispute`); `resolve_dispute_payout`
-  is still `todo!()`.
+  per-application freeze wired up by `raise_dispute`), as is the reverse
+  `dispute-resolution::close_dispute` callback that escrow's admin
+  `resolve_dispute` uses to close the dispute record. The arbiter-driven
+  `resolve_dispute_payout` is still `todo!()`.
 
 ### The evidence window
 
@@ -64,27 +66,28 @@ in a Naira-denominated asset and a Nairobi creator withdraw through a
 mobile-money-connected anchor without either side touching a different
 contract.
 
-## Current state of this scaffold
+## Current state
 
-Every function in `campaign-escrow` and `dispute-resolution` is implemented
-enough to compile and export correctly, but the actual state-transition
-logic for the core flows is left as `todo!()`:
+The full escrow lifecycle is implemented and tested. The only remaining
+`todo!()`s are the two halves of arbiter-driven dispute resolution:
 
 | Area | Status |
 |---|---|
-| Storage schema, error types, event types | Implemented |
+| Storage schema, error types, event types (all events published) | Implemented |
 | `initialize` (both contracts) | Implemented |
-| Read-only getters (`get_campaign`, `get_application`, `get_dispute`) | Implemented |
-| `create_campaign`, `fund_campaign` | `todo!()` |
-| `apply_to_campaign`, `approve_creator`, `submit_proof` | `todo!()` |
-| `release_payment`, `cancel_campaign` | `todo!()` |
-| `freeze_for_dispute` | Implemented |
-| `resolve_dispute_payout` | `todo!()` |
-| `raise_dispute` | Implemented |
-| `assign_arbiter`, `resolve_dispute` (dispute-resolution) | `todo!()` |
+| `create_campaign`, `fund_campaign`, `update_campaign_metadata` | Implemented |
+| `apply_to_campaign`, `approve_creator`, `submit_proof` | Implemented |
+| `approve_submission`, `reject_submission`, `claim_payment` | Implemented |
+| `cancel_campaign`, `expire_campaign`, `reclaim_surplus`, `emergency_recover_campaign` | Implemented |
+| Admin controls: `pause`/`unpause`, `propose_admin`/`accept_admin`, `update_fee_bps`, `update_treasury`, `upgrade` | Implemented |
+| `freeze_for_dispute`, escrow admin `resolve_dispute` (after `MIN_EVIDENCE_WINDOW`) | Implemented |
+| `raise_dispute`, `assign_arbiter`, `close_dispute` (dispute-resolution) | Implemented |
+| Read-only getters (`get_campaign`, `get_application`, `applicant_count`, `campaign_applicants`, `get_campaign_business`, `get_protocol_config`, `get_dispute`, `version`) | Implemented |
+| `resolve_dispute` (dispute-resolution) | `todo!()` |
+| `resolve_dispute_payout` (campaign-escrow) | `todo!()` |
 
-Each `todo!()` has a doc comment directly above it describing the intended
-behavior and the open design questions it depends on — start there.
+Both `todo!()`s have a doc comment directly above them, and both depend on the
+arbitration-model question below.
 
 ## Testing strategy
 
@@ -96,8 +99,10 @@ Run via `cargo test --workspace`. These use `soroban_sdk::testutils::Env` — a
 mocked, in-process host environment that lets you verify contract logic
 quickly without network dependency.
 
-**Coverage:** `initialize`, read-only getters, error cases, state transitions
-for functions that are already implemented.
+**Coverage:** every implemented entry point — happy paths, error cases,
+auth checks, deadline and auto-approval behavior, fee accounting, and
+refund/recovery paths. Cross-contract escrow ↔ dispute-resolution flows are
+covered by `contracts/campaign-escrow/tests/integration.rs`.
 
 **Limitation:** Unit tests don't exercise real network semantics — actual
 transaction submission, real Stellar Asset Contract behavior, ledger time
@@ -141,21 +146,38 @@ See [`README.md`](../README.md#end-to-end-testnet-smoke-test) for full details.
 
 ## Open design questions for contributors
 
-1. **Proof-of-work verification** (`submit_proof`): off-chain URI only, an
-   on-chain hash commitment, an oracle attestation? This is probably the
-   single biggest open question in the repo.
-2. **Payout sizing** (`approve_creator`): business sets `payout_amount` per
-   creator at approval time (current sketch), vs. an even split of
-   `total_budget / max_creators`, vs. milestone-based partial payouts.
-3. **Arbitration model** (`dispute-resolution`): single trusted arbiter
+1. **Arbitration model** (`dispute-resolution::resolve_dispute`,
+   `campaign-escrow::resolve_dispute_payout`): single trusted arbiter
    (simplest, most centralized) vs. staked juror voting vs. an oracle feed.
-4. **Fee collection** (`release_payment`): transfer the platform fee to
-   `admin` on every release, or accrue it for a periodic sweep?
-5. **Release trigger**: does `release_payment` require an explicit business
-   call, or should there be an auto-release timeout after proof submission
-   to protect creators from an unresponsive business?
+   This blocks the last two `todo!()`s. Whatever lands,
+   `resolve_dispute_payout` must clear `frozen` / `dispute_opened_at` when it
+   settles.
+2. **Proof-of-work verification** (`submit_proof`): proofs are currently an
+   opaque off-chain URI. An on-chain hash commitment or an oracle attestation
+   would make them verifiable.
+3. **Version tracking on `upgrade`** (both contracts): `upgrade` swaps the
+   WASM but doesn't bump the stored `Version`. Either take a new version
+   string or derive it from the wasm hash.
 
-## Known scaffold quirks
+### Settled decisions
+
+These were open questions in the original scaffold and are now decided in
+code:
+
+- **Payout sizing:** the business sets `payout_amount` per creator in
+  `approve_creator`, and can't commit more than the escrow balance.
+- **Fee collection:** `claim_payment` sends the platform fee straight to
+  `treasury` on every payout (no accrual or sweep). The fee rate is
+  snapshotted into `Campaign.fee_bps` at `create_campaign`, so a later
+  `update_fee_bps` (capped at 10%) never changes an existing campaign's
+  agreed payouts.
+- **Release trigger:** the business accepts a proof with
+  `approve_submission` and the creator then calls `claim_payment`. If the
+  business never reviews, the creator can claim anyway once
+  `completion_deadline` passes (auto-approval). Either side can block this
+  by raising a dispute first.
+
+## Known build quirks
 
 - `stellar contract build` prints warnings like `type 'CampaignId' ... is not
   defined in the spec`. This is cosmetic — `CampaignId`/`DisputeId` are

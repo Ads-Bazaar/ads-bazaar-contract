@@ -1,12 +1,12 @@
 //! # ads-bazaar-dispute-resolution
 //!
-//! Arbitrates disputes over campaign payouts held by `campaign-escrow`. As
-//! with that contract, this crate ships the data model, storage schema,
-//! errors and public API surface; the arbitration workflow itself
-//! (assigning arbiters, evidence windows, resolving outcomes and calling
-//! back into escrow) is left as `todo!()` for contributors — the
-//! arbitration *model* (single trusted arbiter vs. staked jurors vs. an
-//! oracle) is the biggest open design question in this repo.
+//! Arbitrates disputes over campaign payouts held by `campaign-escrow`.
+//! Raising a dispute (which freezes the payout in escrow), assigning an
+//! arbiter, and closing a dispute settled by escrow's admin path are
+//! implemented. Arbiter-driven resolution (`resolve_dispute`, calling back
+//! into escrow's `resolve_dispute_payout`) is still `todo!()` — it depends
+//! on the arbitration *model* (single trusted arbiter vs. staked jurors vs.
+//! an oracle), the biggest open design question in this repo.
 #![no_std]
 
 mod error;
