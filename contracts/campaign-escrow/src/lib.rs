@@ -114,10 +114,9 @@ pub struct CampaignEscrowContract;
 impl CampaignEscrowContract {
     /// One-time setup. Must be called before any other function.
     ///
-    /// `dispute_contract` is the only address permitted to call
-    /// `freeze_for_dispute` / `resolve_dispute_payout` once those are
-    /// implemented — it should be the deployed `dispute-resolution`
-    /// contract's address.
+    /// `dispute_contract` is the only non-admin address permitted to call
+    /// `freeze_for_dispute` / `resolve_dispute_payout` — it should be the
+    /// deployed `dispute-resolution` contract's address.
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -133,9 +132,8 @@ impl CampaignEscrowContract {
         admin.require_auth();
 
         storage::set_admin(&env, &admin);
-        // No separate fee-collection destination exists yet (see the TODO
-        // on `release_payment` below) — treasury defaults to admin until a
-        // future issue adds a dedicated setter.
+        // Treasury defaults to admin; `update_treasury` can point it
+        // elsewhere after deployment.
         storage::set_treasury(&env, &admin);
         storage::set_dispute_contract(&env, &dispute_contract);
         storage::set_fee_bps(&env, fee_bps);
@@ -207,8 +205,9 @@ impl CampaignEscrowContract {
         Ok(())
     }
 
-    /// Update the platform fee for future `claim_payment` calls.
-    /// The fee is read at claim time, so a fee change affects pending campaigns.
+    /// Update the platform fee for campaigns created after this call.
+    /// Existing campaigns keep the `fee_bps` snapshotted at `create_campaign`,
+    /// so a fee change never alters already-agreed payouts.
     /// Callable only by the admin.
     ///
     /// Capped at 1,000 bps (10%), deliberately tighter than the 0..=10,000

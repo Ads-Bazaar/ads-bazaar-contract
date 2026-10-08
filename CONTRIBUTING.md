@@ -1,9 +1,9 @@
 # Contributing to ads-bazaar-contract
 
-Thanks for helping build AdsBazaar's on-chain layer. This repo is an early
-scaffold — the data model and API surface exist, but most of the actual
-contract logic is still open (see `docs/ARCHITECTURE.md` for the current
-state and the biggest open design questions).
+Thanks for helping build AdsBazaar's on-chain layer. The escrow lifecycle is
+implemented and tested. What's left is mainly arbiter-driven dispute
+resolution plus a few smaller design questions (see `docs/ARCHITECTURE.md`
+for the current state and the open design questions).
 
 ## Getting set up
 
@@ -26,19 +26,20 @@ stellar contract build          # builds every contract to .wasm
 ## Where to start
 
 1. Read `docs/ARCHITECTURE.md` — it lists exactly what's implemented, what's
-   `todo!()`, and the open design questions each stub depends on.
-2. Pick a `todo!()` in `contracts/campaign-escrow/src/lib.rs` or
-   `contracts/dispute-resolution/src/lib.rs`. Each one has a doc comment
+   still `todo!()`, and the open design questions.
+2. Pick an open item: one of the two remaining `todo!()`s
+   (`dispute-resolution::resolve_dispute`,
+   `campaign-escrow::resolve_dispute_payout`), a `TODO(contributors)` doc
+   comment, or an open design question. Each `todo!()` has a doc comment
    directly above it describing the intended behavior.
 3. If the design question it depends on isn't settled yet, open an issue or
    discussion proposing an approach before writing the implementation —
    these are the decisions other contributors will build on top of.
-4. Add tests alongside your implementation in the crate's `test.rs`. The
-   existing tests (`initialize_*`, `get_*_not_found_before_creation`, the
-   `*_is_not_yet_implemented` `#[should_panic]` tests) show the pattern:
-   register the contract, `env.mock_all_auths()`, call through the
-   generated `Client`. Replace a `*_is_not_yet_implemented` test with a real
-   assertion once you implement that function.
+4. Add tests alongside your implementation in the crate's `test.rs`, and in
+   `contracts/campaign-escrow/tests/integration.rs` for anything that crosses
+   the escrow ↔ dispute-resolution boundary. The existing tests show the
+   pattern: register the contract, `env.mock_all_auths()`, call through the
+   generated `Client`.
 
 ## Pull requests
 

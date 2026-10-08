@@ -9,7 +9,7 @@ The initial focus is emerging-market creator commerce: Nigerian businesses payin
 This repository is the on-chain layer of the [AdsBazaar](https://twitter.com/AdsBazaar5) product: the Soroban contracts that hold campaign budgets in escrow and arbitrate contested payouts. The frontend and backend live in a separate repository.
 
 > [!NOTE]
-> This repository is an early scaffold. The contract data model, storage schema, error types, event types, and public API surface are in place and tested; the state-transition logic for most of the marketplace flow (campaign creation, funding, creator approval, proof review, payout release, dispute arbitration) is intentionally left as `todo!()` for contributors to design and implement. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for exactly what's implemented vs. open.
+> The full campaign escrow lifecycle is implemented and tested: campaign creation, funding, creator applications and approval, proof submission and review, payout claiming with platform fee, cancellation, expiry, surplus reclaim, and raising and freezing disputes. One piece is still open: settling a dispute through the arbiter in `dispute-resolution` (`resolve_dispute` → `campaign-escrow::resolve_dispute_payout`), which is still `todo!()` because the arbitration model hasn't been decided yet. Until then, an admin can settle disputes through `campaign-escrow::resolve_dispute`, which only works after a 72-hour evidence window. The contracts haven't been audited yet and aren't on mainnet.
 
 ---
 
@@ -57,7 +57,7 @@ Two contracts instead of one, on purpose:
 - **Escrow correctness is the highest-stakes code in this repo** — it holds real business funds, so its surface area (and audit surface) is kept as small as possible.
 - **Arbitration is the least-settled design space.** Whether disputes are resolved by a single trusted arbiter, a staked jury, or an oracle is an open question. Isolating it in its own contract means that design can iterate — or even be redeployed — without touching escrow.
 
-The two contracts talk to each other through a narrow, explicit interface (`freeze_for_dispute` / `resolve_dispute_payout`, callable only by the configured dispute contract address), not a shared database.
+The two contracts talk to each other through a narrow, explicit interface, not a shared database. `freeze_for_dispute` and `resolve_dispute_payout` on escrow can only be called by the configured dispute contract (or, for freezing, the admin). `get_campaign_business` lets the dispute contract check who owns a campaign. `close_dispute` on the dispute contract can only be called by escrow.
 
 ### Campaign lifecycle
 
@@ -68,8 +68,11 @@ pub enum CampaignStatus {
     Active,     // at least one creator approved and producing content
     Completed,  // all approved creators paid out
     Cancelled,  // refunded to the business before completion
+    Disputed,   // flagged for dispute; funds locked pending resolution
 }
 ```
+
+The happy path for one creator is `create_campaign` → `fund_campaign` → `apply_to_campaign` → `approve_creator` → `submit_proof` → `approve_submission` → `claim_payment`. If the business doesn't review a submitted proof by the `completion_deadline`, the creator can claim anyway (auto-approval).
 
 ### Contract capabilities
 
@@ -78,27 +81,35 @@ pub enum CampaignStatus {
 | Function | Purpose | Status |
 | --- | --- | --- |
 | `initialize` | Sets admin, trusted dispute contract, platform fee bps | Implemented |
-| `create_campaign` | Business creates a draft campaign for a given `PayoutAsset` | `todo!()` |
-| `fund_campaign` | Transfers the campaign budget from the business into escrow | `todo!()` |
-| `apply_to_campaign` | Creator applies to a funded campaign | `todo!()` |
-| `approve_creator` | Business approves an applicant and sets their payout amount | `todo!()` |
-| `submit_proof` | Approved creator submits proof of completed work | `todo!()` |
-| `release_payment` | Releases an approved creator's escrowed payout, minus platform fee | `todo!()` |
-| `cancel_campaign` | Cancels a campaign and refunds the remaining escrow balance | `todo!()` |
-| `freeze_for_dispute` / `resolve_dispute_payout` | Cross-contract hooks called only by `dispute-resolution` | `todo!()` |
-| `get_campaign` / `get_application` | Read-only lookups | Implemented |
+| `create_campaign` | Business creates a draft campaign for a given `PayoutAsset` (checks that the token is a live SEP-41 contract, and checks budget, creator cap, and deadline order) | Implemented |
+| `fund_campaign` | Transfers the full campaign budget from the business into escrow (`Draft` → `Funded`) | Implemented |
+| `update_campaign_metadata` | Business amends the campaign brief before any creator has applied | Implemented |
+| `apply_to_campaign` | Creator applies once to a funded campaign before the application deadline | Implemented |
+| `approve_creator` | Business approves an applicant and sets their payout. Rejects going over `max_creators`, approving the same creator twice, committing more than the escrow holds, or approving after the deadline | Implemented |
+| `submit_proof` | Approved creator submits proof of completed work before the completion deadline | Implemented |
+| `approve_submission` / `reject_submission` | Business accepts a proof (makes the payout claimable) or rejects it (creator can resubmit) | Implemented |
+| `claim_payment` | Creator claims their escrowed payout minus the platform fee, which goes to treasury. Works after approval, or after the deadline via auto-approval | Implemented |
+| `cancel_campaign` / `expire_campaign` / `reclaim_surplus` | Business gets back the escrow that isn't committed to any creator. Payouts already committed stay claimable | Implemented |
+| `emergency_recover_campaign` | Admin sweeps uncommitted funds from a campaign abandoned ~6 months past its deadline, sending them to treasury | Implemented |
+| `freeze_for_dispute` | Freezes one creator's payout while a dispute is reviewed and starts the 72h evidence window | Implemented |
+| `resolve_dispute` | Admin settles a frozen payout after `MIN_EVIDENCE_WINDOW`, then closes the dispute record | Implemented |
+| `resolve_dispute_payout` | Arbiter-driven settlement hook called by `dispute-resolution` | `todo!()` |
+| `pause` / `unpause`, `propose_admin` / `accept_admin`, `update_fee_bps` / `update_treasury`, `upgrade` | Admin controls: pause switch, two-step admin transfer, fee capped at 10%, treasury address, WASM upgrade | Implemented |
+| `applicant_count` / `campaign_applicants` | Count of a campaign's applicants, and a page of their addresses in the order they applied (up to `MAX_APPLICANTS_PAGE` = 50 per call) | Implemented |
+| `get_campaign` / `get_application` / `get_campaign_business` / `get_protocol_config` / `is_paused` / `version` | Read-only lookups | Implemented |
 
 `dispute-resolution`:
 
 | Function | Purpose | Status |
 | --- | --- | --- |
 | `initialize` | Sets admin and the trusted escrow contract address | Implemented |
-| `raise_dispute` | Raise a dispute over a creator's payout on a campaign | `todo!()` |
-| `assign_arbiter` | Assign an arbiter to review a raised dispute | `todo!()` |
+| `raise_dispute` | Creator or campaign business raises a dispute over one payout and freezes it in escrow (one open dispute per campaign/creator pair) | Implemented |
+| `assign_arbiter` | Admin assigns an arbiter to a raised dispute (`Raised` → `UnderReview`) | Implemented |
 | `resolve_dispute` | Arbiter resolves a dispute and triggers payout via escrow | `todo!()` |
-| `get_dispute` | Read-only lookup | Implemented |
+| `close_dispute` | Escrow-only callback that marks a dispute resolved after escrow's admin `resolve_dispute` settles it | Implemented |
+| `get_dispute` / `version` / `upgrade` | Read-only lookups and admin WASM upgrade | Implemented |
 
-Every `todo!()` has a doc comment directly above it in `lib.rs` describing intended behavior and the open design question it depends on — see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#open-design-questions-for-contributors) for the full list (proof-of-work verification, payout sizing, arbitration model, fee collection, release trigger).
+Each of the two remaining `todo!()`s has a doc comment above it in `lib.rs`. Both are blocked on the same open question: which arbitration model to use (single trusted arbiter, staked jurors, or an oracle).
 
 ### Escrow design principles
 
@@ -146,7 +157,12 @@ pub struct PayoutAsset {
 │   └── dispute-resolution/   arbitration contract
 ├── docs
 │   └── ARCHITECTURE.md
-├── .github/workflows/ci.yml
+├── scripts
+│   └── testnet-smoke-test.sh  end-to-end lifecycle check against testnet
+├── .github/workflows
+│   ├── ci.yml                 build, lint, test
+│   └── testnet-smoke-test.yml manually triggered smoke test
+├── deploy.sh                  build + deploy + cross-initialize both contracts
 ├── Cargo.toml                 workspace manifest
 └── rust-toolchain.toml
 ```
@@ -230,9 +246,13 @@ stellar contract invoke --id "$ESCROW_ID" --source "$BUSINESS_SECRET" --network 
 stellar contract invoke --id "$ESCROW_ID" --source "$CREATOR_SECRET" --network testnet \
   -- submit_proof --creator "$CREATOR_ADDRESS" --campaign_id 0 --proof_uri "ipfs://proof"
 
-# Business releases payment (creator receives payout minus platform fee)
+# Business approves the submitted proof
 stellar contract invoke --id "$ESCROW_ID" --source "$BUSINESS_SECRET" --network testnet \
-  -- release_payment --business "$BUSINESS_ADDRESS" --campaign_id 0 --creator "$CREATOR_ADDRESS"
+  -- approve_submission --business "$BUSINESS_ADDRESS" --campaign_id 0 --creator "$CREATOR_ADDRESS"
+
+# Creator claims payment (receives payout minus platform fee)
+stellar contract invoke --id "$ESCROW_ID" --source "$CREATOR_SECRET" --network testnet \
+  -- claim_payment --creator "$CREATOR_ADDRESS" --campaign_id 0
 
 # Read-only lookup
 stellar contract invoke --id "$ESCROW_ID" --source "$BUSINESS_SECRET" --network testnet \
@@ -284,14 +304,18 @@ This is the recommended pre-release checklist item to confirm the testnet deploy
 
 ## Testing
 
-Current coverage exercises what's implemented so far: `initialize`, read-only getters, and that each unimplemented function correctly panics. As `todo!()`s are filled in, add real tests alongside them (see `CONTRIBUTING.md`).
+`cargo test --workspace` runs 154 tests: unit tests in each contract's `src/test.rs` and cross-contract integration tests in `contracts/campaign-escrow/tests/integration.rs`. The testnet smoke test above checks the same lifecycle against a real deployment.
 
-| Area | Tests to add |
+| Area | Covered |
 | --- | --- |
-| Escrow funding/release | Funding, payout, fee accounting, duplicate claims, deadline behavior |
-| Campaign workflow | Application limits, selection permissions, proof submission rules |
-| Disputes | Participant authorization, status transitions, arbitration outcome application |
-| Cross-contract | Only `dispute-resolution` can call `freeze_for_dispute` / `resolve_dispute_payout` |
+| Escrow funding/release | Funding, payout claims, fee accounting (including fee snapshot and updates), duplicate claims, deadline and auto-approval behavior |
+| Campaign workflow | Application limits, selection permissions, proof submission/rejection/resubmission, metadata updates |
+| Refunds & recovery | Cancel, expire, surplus reclaim with committed payouts still outstanding, emergency recovery grace period |
+| Disputes | Who can raise a dispute, freezing a single payout, status transitions, the evidence window, admin settlement and dispute-record sync |
+| Admin | Pause guard, two-step admin transfer, fee cap, treasury updates |
+| Cross-contract | `freeze_for_dispute` / `close_dispute` caller restrictions, escrow ↔ dispute-resolution round trips |
+
+When `resolve_dispute` / `resolve_dispute_payout` are implemented, add tests for applying arbiter outcomes and for which callers each hook accepts (see `CONTRIBUTING.md`).
 
 ---
 
@@ -307,7 +331,7 @@ These contracts handle payment workflows and should be treated as financial infr
 - Add contract tests for all payout and dispute edge cases before mainnet deployment.
 - Complete external review before handling production campaign value.
 
-Known areas requiring design work before production: formal dispute resolution/arbitration model, campaign cancellation and refund rules, fee governance policy, and an independent contract audit. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the current list.
+Known areas requiring design work before production: the arbiter-driven dispute resolution model, fee governance policy beyond the current admin-set fee (capped at 10%), version tracking across `upgrade`, and an independent contract audit.
 
 ---
 
@@ -316,10 +340,10 @@ Known areas requiring design work before production: formal dispute resolution/a
 | Phase | Focus | Status |
 | --- | --- | --- |
 | 0 | Workspace scaffold: data model, storage, errors, events, CI | Done |
-| 1 | Campaign creation, funding, and escrow release logic | Planned |
-| 2 | Creator application, approval, and proof submission flow | Planned |
-| 3 | Dispute arbitration model and cross-contract dispute hooks | Planned |
-| 4 | Testnet deployment and integration with the backend indexer | Planned |
+| 1 | Campaign creation, funding, and escrow release logic | Done |
+| 2 | Creator application, approval, and proof submission flow | Done |
+| 3 | Dispute arbitration model and cross-contract dispute hooks | In progress: raise/freeze/assign and admin settlement done; arbiter resolution open |
+| 4 | Testnet deployment and integration with the backend indexer | In progress: deploy script and smoke test in place; indexer integration pending |
 | 5 | External audit and mainnet launch | Planned |
 
 ---
@@ -328,14 +352,14 @@ Known areas requiring design work before production: formal dispute resolution/a
 
 Contributions are welcome, especially in areas where Stellar infrastructure, emerging-market payments, and creator marketplace design intersect.
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full guide. Short version: read `docs/ARCHITECTURE.md`, pick a `todo!()`, and open a PR — most stubs have an open design question attached that's worth discussing before implementing.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full guide.
 
-### Good first contribution areas
+### Open contribution areas
 
-- `create_campaign` / `fund_campaign` — the core escrow funding flow
-- Contract tests for deadline and payout edge cases as each function lands
-- Proof-of-work verification design (`submit_proof`) — see the open question in `docs/ARCHITECTURE.md`
-- Arbitration model proposal for `dispute-resolution`
+- Arbitration model proposal, then `dispute-resolution::resolve_dispute` and `campaign-escrow::resolve_dispute_payout` (must clear `frozen` / `dispute_opened_at` when it settles)
+- Version tracking for `upgrade` (see the TODO on `upgrade` in both contracts)
+- Proof-of-work verification design for `submit_proof` (proofs are currently opaque URIs)
+- Backend indexer integration against the emitted `#[contractevent]` events
 
 Open an issue before starting large protocol or state-machine changes.
 
@@ -343,17 +367,13 @@ Open an issue before starting large protocol or state-machine changes.
 
 ## Current status
 
-Pre-testnet, under active development.
+Under active development. Not yet audited or on mainnet.
 
-- Workspace, storage schema, error/event types: in place and tested.
-- Core escrow and marketplace state-transition logic: open, tracked as `todo!()` in `lib.rs`.
-- Testnet deployment: pending.
+- Campaign escrow lifecycle (create, fund, apply, approve, prove, review, claim, cancel/expire/reclaim, emergency recovery): implemented and tested.
+- Admin controls (pause, two-step admin transfer, fee and treasury updates, upgrade): implemented and tested.
+- Disputes: raising, freezing, arbiter assignment, and admin settlement after the evidence window are implemented. Arbiter-driven resolution is still `todo!()`.
+- Testnet: `deploy.sh` and an end-to-end smoke test workflow are in place. Published contract addresses are pending.
 - External audit: not yet started.
-
----
-
-
-
 
 ---
 

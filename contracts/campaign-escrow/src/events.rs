@@ -3,8 +3,8 @@
 //! interface spec (discoverable by indexers/SDKs), not just ad-hoc
 //! `env.events().publish(...)` calls.
 //!
-//! None of these are published yet — wire up `.publish(&env)` calls at the
-//! matching point in `lib.rs` as each `todo!()` handler is implemented.
+//! Every event here is published from `lib.rs` at its matching state
+//! transition.
 #![allow(dead_code)]
 
 use ads_bazaar_shared::{CampaignId, DisputeOutcome};
@@ -89,8 +89,7 @@ pub struct SurplusReclaimed {
     pub amount: i128,
 }
 
-/// Emitted by `pause`. Already wired up (unlike most events above, which
-/// are still waiting on their corresponding `todo!()` handlers).
+/// Emitted by `pause`.
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct ContractPaused {

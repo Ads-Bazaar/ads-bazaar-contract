@@ -38,11 +38,10 @@
 //!
 //! ## What is NOT tested here (pending implementations)
 //!
-//! - `dispute-resolution::assign_arbiter` — `todo!()` upstream (issue #40)
 //! - `dispute-resolution::resolve_dispute` — `todo!()` upstream (issue #41)
 //! - `campaign-escrow::resolve_dispute_payout` — `todo!()` upstream (issue #42)
 //!
-//! Once those issues are implemented, extend tests 6–8 with the full
+//! Once those are implemented, extend tests 6–8 with the full
 //! arbiter-resolved path so `raise → assign → resolve → payout` has
 //! balance-level coverage.
 

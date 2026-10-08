@@ -69,10 +69,9 @@ pub struct Application {
 /// `get_protocol_config` so the frontend can compute fee breakdowns before a
 /// business funds a campaign.
 ///
-/// `treasury` defaults to `admin` at `initialize` time — there is no
-/// separate fee-collection destination yet (see the TODO on
-/// `release_payment` in `lib.rs`). A future issue can add a
-/// `set_treasury` admin-only setter if/when that needs to diverge.
+/// `treasury` defaults to `admin` at `initialize` time and can be changed
+/// with `update_treasury`. `fee_bps` is the rate new campaigns will
+/// snapshot; an existing campaign's rate is `Campaign::fee_bps`.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProtocolConfig {
